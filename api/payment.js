@@ -622,7 +622,7 @@ module.exports = async (req, res) => {
       const response = {
         success: true,
         form: htmlForm,
-        url: `https://creatium-qr.vercel.app/?sum=${amountInRub}&order_id=${orderId}`,
+        url: `https://creatium-qr.vercel.app/?sum=${amountInRub}&order_id=${orderId}&operation_id=${operationId}`,
         amount: amountInRub,
         order_id: orderId,
         payment_id: paymentId,
@@ -661,16 +661,87 @@ module.exports = async (req, res) => {
     }
   }
 
-  // 🔥 ОБРАБОТКА GET ЗАПРОСА (для прямого доступа)
+  // 🔥 ОБРАБОТКА GET ЗАПРОСА ОТ CREATIUM (когда Creatium открывает страницу)
   if (req.method === 'GET' && !req.url.includes('favicon') && !req.url.includes('.png')) {
     try {
       const urlParams = new URLSearchParams(req.url.split('?')[1]);
-      const sum = urlParams.get('sum') || '100';
-      const order_id = urlParams.get('order_id') || 'test';
+      const sum = urlParams.get('sum');
+      const order_id = urlParams.get('order_id');
+      const operation_id = urlParams.get('operation_id');
 
-      console.log('Direct GET request:', { sum, order_id });
+      console.log('GET request from Creatium:', { sum, order_id, operation_id });
 
-      const amountInRub = parseFloat(sum);
+      // Если это запрос от Creatium с параметрами, просто возвращаем простую страницу
+      if (sum && order_id) {
+        const amountInRub = parseFloat(sum);
+        
+        const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Оплата заказа #${order_id}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 500px;
+            margin: 0 auto;
+            padding: 50px 20px;
+            background: #f5f5f5;
+            text-align: center;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+        }
+        .amount {
+            font-size: 32px;
+            font-weight: bold;
+            color: #27ae60;
+            margin: 20px 0;
+        }
+        .info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💳 Страница оплаты</h1>
+        <div class="amount">${amountInRub} руб.</div>
+        <div class="info">
+            <strong>Заказ #${order_id}</strong><br>
+            Страница загружена. Система проверяет статус оплаты...
+        </div>
+        <div style="color: #666; margin-top: 20px;">
+            Если оплата уже совершена, система автоматически перенаправит вас
+        </div>
+    </div>
+    <script>
+        console.log('Payment page loaded for order:', '${order_id}');
+        console.log('Operation ID:', '${operation_id}');
+    </script>
+</body>
+</html>
+        `;
+
+        res.setHeader('Content-Type', 'text/html');
+        return res.status(200).send(html);
+      }
+
+      // Если это обычный GET запрос без параметров - генерируем тестовый QR
+      const amountInRub = parseFloat(sum || '100');
       const amountForQR = Math.round(amountInRub * 100);
 
       const payload = {
@@ -695,11 +766,10 @@ module.exports = async (req, res) => {
 
       const qrResult = await qrResponse.json();
       
-      // Получаем operation_id из ответа
       let operationId = qrResult.results?.operation_id || `test_${Date.now()}`;
 
-      const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id}&operation_id=${operationId}&status=success&paid=true`;
-      const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${order_id}&status=failed&paid=false`;
+      const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id || 'test'}&operation_id=${operationId}&status=success&paid=true`;
+      const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${order_id || 'test'}&status=failed&paid=false`;
 
       const html = `
 <!DOCTYPE html>
@@ -744,7 +814,7 @@ module.exports = async (req, res) => {
     <div class="container">
         <h2>💳 Тест оплаты</h2>
         <div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0; color: #1976d2;">
-            Заказ #${order_id}<br>
+            Заказ #${order_id || 'test'}<br>
             <small>Operation ID: ${operationId}</small>
         </div>
         <div class="amount">${amountInRub} руб.</div>
