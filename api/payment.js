@@ -2,18 +2,10 @@
 const API_KEY = process.env.QR_API_KEY;
 
 module.exports = async (req, res) => {
-  // Проверяем что API ключ загружен
-  if (!API_KEY) {
-    console.error('QR_API_KEY is not set in environment variables');
-    return res.status(500).json({
-      success: false,
-      error: 'Server configuration error'
-    });
-  }
+  console.log('=== CREATIUM QR PAYMENT HANDLER ===');
+  console.log('Method:', req.method);
+  console.log('URL:', req.url);
 
-  console.log('API Key loaded:', API_KEY ? '***' + API_KEY.slice(-4) : 'NOT SET');
-  
-  // остальной код без изменений...
   // Настраиваем CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -23,6 +15,35 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
+
+  // Проверяем что API ключ загружен
+  if (!API_KEY) {
+    console.error('QR_API_KEY is not set in environment variables');
+    
+    const errorHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Ошибка</title></head>
+<body style="font-family: Arial; text-align: center; padding: 50px;">
+  <h2 style="color: #e74c3c;">❌ Ошибка сервера</h2>
+  <p>API ключ не настроен</p>
+</body>
+</html>
+    `;
+    
+    if (req.method === 'POST') {
+      return res.status(200).json({
+        success: false,
+        form: errorHtml,
+        error: 'API key not configured'
+      });
+    } else {
+      res.setHeader('Content-Type', 'text/html');
+      return res.status(200).send(errorHtml);
+    }
+  }
+
+  console.log('API Key loaded:', API_KEY ? '***' + API_KEY.slice(-4) : 'NOT SET');
 
   // 🔥 ОБРАБОТКА POST ОТ CREATIUM
   if (req.method === 'POST') {
@@ -34,13 +55,24 @@ module.exports = async (req, res) => {
         body += chunk;
       }
       
-      console.log('Raw body length:', body.length);
+      console.log('Raw body received, length:', body.length);
 
       let data = {};
-      if (body) {
-        data = JSON.parse(body);
+      if (body && body.trim() !== '') {
+        try {
+          data = JSON.parse(body);
+          console.log('✅ Successfully parsed JSON data');
+        } catch (parseError) {
+          console.error('❌ JSON parse error:', parseError);
+          throw new Error('Invalid JSON data received');
+        }
+      } else {
+        console.log('⚠️ Empty body received, using default data');
       }
       
+      console.log('Payment amount:', data.payment?.amount);
+      console.log('Cart subtotal:', data.cart?.subtotal);
+
       // 🔥 ИСПРАВЛЕННЫЙ РАСЧЕТ СУММЫ
       let amountInRub = 100;
       let amountForQR = 10000;
@@ -48,9 +80,13 @@ module.exports = async (req, res) => {
       if (data.payment && data.payment.amount) {
         amountInRub = parseFloat(data.payment.amount);
         amountForQR = Math.round(amountInRub * 100);
+        console.log('💰 Using payment amount:', amountInRub, 'RUB ->', amountForQR, 'kopecks');
       } else if (data.cart && data.cart.subtotal) {
         amountInRub = data.cart.subtotal;
         amountForQR = Math.round(amountInRub * 100);
+        console.log('💰 Using cart subtotal:', amountInRub, 'RUB ->', amountForQR, 'kopecks');
+      } else {
+        console.log('💰 Using default amount: 100 RUB');
       }
 
       // 🔥 ГЕНЕРИРУЕМ QR КОД
@@ -61,20 +97,31 @@ module.exports = async (req, res) => {
         notification_url: "https://perevod-rus.ru/callback/"
       };
 
+      console.log('🚀 Sending to QR service...');
+
       const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Api-Key": API_KEY // 🔐 Используем переменную окружения
+          "X-Api-Key": API_KEY
         },
         body: JSON.stringify(payload)
       });
 
       if (!qrResponse.ok) {
+        const errorText = await qrResponse.text();
+        console.error('❌ QR service error:', qrResponse.status, errorText);
         throw new Error(`QR service error: ${qrResponse.status}`);
       }
 
       const qrResult = await qrResponse.json();
+      console.log('✅ QR generated successfully');
+
+      // Проверяем что QR-код сгенерирован
+      if (!qrResult.results || !qrResult.results.qr_img) {
+        console.error('❌ No QR image in response:', qrResult);
+        throw new Error('QR code generation failed');
+      }
 
       // 🔥 СОЗДАЕМ HTML ФОРМУ
       const htmlForm = `
@@ -141,14 +188,22 @@ module.exports = async (req, res) => {
 </html>
       `;
 
-      return res.status(200).json({
+      const response = {
         success: true,
         form: htmlForm,
-        amount: amountInRub
-      });
+        url: `https://creatium-qr.vercel.app/?sum=${amountInRub}`,
+        amount: amountInRub,
+        order_id: data.order?.id,
+        payment_id: data.payment?.id
+      };
+
+      console.log('✅ Returning successful response to Creatium');
+      
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      return res.status(200).json(response);
 
     } catch (error) {
-      console.error('Error:', error);
+      console.error('❌ Error processing payment:', error);
       
       const errorHtml = `
 <!DOCTYPE html>
@@ -157,21 +212,134 @@ module.exports = async (req, res) => {
 <body style="font-family: Arial; text-align: center; padding: 50px;">
   <h2 style="color: #e74c3c;">❌ Ошибка оплаты</h2>
   <p>${error.message}</p>
+  <p style="color: #666; margin-top: 20px;">Попробуйте повторить оплату позже</p>
 </body>
 </html>
       `;
       
+      console.log('⚠️ Returning error response to Creatium');
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
       return res.status(200).json({
         success: false,
+        error: error.message,
         form: errorHtml
       });
     }
   }
 
-  // GET запросы...
+  // 🔥 ОБРАБОТКА GET ЗАПРОСА
   if (req.method === 'GET') {
-    // ... существующий код для GET запросов
+    try {
+      const urlParams = new URLSearchParams(req.url.split('?')[1]);
+      const sum = urlParams.get('sum') || '100';
+      const order_id = urlParams.get('order_id');
+
+      console.log('📱 Direct GET request:', { sum, order_id });
+
+      const amountInRub = parseFloat(sum);
+      const amountForQR = Math.round(amountInRub * 100);
+
+      const payload = {
+        sum: amountForQR,
+        qr_size: 400,
+        payment_purpose: "Оплата услуг перевода", 
+        notification_url: "https://perevod-rus.ru/callback/"
+      };
+
+      const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Api-Key": API_KEY
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!qrResponse.ok) {
+        throw new Error(`QR service error: ${qrResponse.status}`);
+      }
+
+      const qrResult = await qrResponse.json();
+
+      const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Оплата ${amountInRub} руб.</title>
+    <style>
+        body { 
+            font-family: Arial; 
+            text-align: center; 
+            padding: 50px; 
+            background: #f5f5f5; 
+        }
+        .container { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 15px; 
+            display: inline-block;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        h2 { 
+            color: #333; 
+            margin-bottom: 20px;
+        }
+        .amount { 
+            color: #27ae60; 
+            font-size: 28px; 
+            font-weight: bold; 
+            margin: 20px 0; 
+        }
+        .qr-code { 
+            max-width: 300px; 
+            border: 3px solid #3498db; 
+            border-radius: 10px; 
+            padding: 10px;
+            background: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>💳 Оплата заказа</h2>
+        ${order_id ? `<div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0; color: #1976d2;">Заказ #${order_id}</div>` : ''}
+        <div class="amount">${amountInRub} руб.</div>
+        <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
+        <div style="margin-top: 20px; color: #666;">
+            Отсканируйте QR-код для оплаты ${amountInRub} руб.
+        </div>
+    </div>
+</body>
+</html>
+      `;
+
+      res.setHeader('Content-Type', 'text/html');
+      return res.status(200).send(html);
+
+    } catch (error) {
+      console.error('GET Error:', error);
+      
+      const errorHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Ошибка</title></head>
+<body style="font-family: Arial; text-align: center; padding: 50px;">
+  <h2>❌ Ошибка</h2>
+  <p>${error.message}</p>
+</body>
+</html>
+      `;
+      
+      res.setHeader('Content-Type', 'text/html');
+      return res.status(200).send(errorHtml);
+    }
   }
 
-  return res.status(405).json({ error: 'Method not allowed' });
+  // Если метод не поддерживается
+  console.error('❌ Method not allowed:', req.method);
+  return res.status(405).json({
+    error: 'Method not allowed',
+    supported_methods: ['GET', 'POST', 'OPTIONS']
+  });
 };
