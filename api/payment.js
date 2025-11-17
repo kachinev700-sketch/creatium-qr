@@ -36,41 +36,30 @@ module.exports = async (req, res) => {
       console.log('Raw cart subtotal:', data.cart?.subtotal);
 
       // 🔥 ИСПРАВЛЕННЫЙ РАСЧЕТ СУММЫ
-      let amount = 100;
+      let amountInRub = 100; // сумма в рублях для отображения
+      let amountForQR = 10000; // сумма в копейках для QR-кода
       
       if (data.payment && data.payment.amount) {
-        // Преобразуем строку "1000.000000" в число 1000
-        const amountStr = data.payment.amount;
-        console.log('Amount string from payment:', amountStr);
+        // Получаем сумму в рублях из Creatium
+        amountInRub = parseFloat(data.payment.amount);
+        console.log('Amount in RUB from payment:', amountInRub);
         
-        // Убираем лишние нули и преобразуем в число
-        amount = parseFloat(amountStr);
-        console.log('Parsed amount from payment:', amount);
+        // 🔥 ПРЕОБРАЗУЕМ РУБЛИ В КОПЕЙКИ ДЛЯ QR-КОДА
+        amountForQR = Math.round(amountInRub * 100);
+        console.log('Amount in kopecks for QR:', amountForQR);
         
       } else if (data.cart && data.cart.subtotal) {
         // Если subtotal уже число, используем как есть
-        amount = data.cart.subtotal;
-        console.log('Amount from cart subtotal:', amount);
+        amountInRub = data.cart.subtotal;
+        amountForQR = Math.round(amountInRub * 100);
+        console.log('Amount from cart - RUB:', amountInRub, 'Kopecks:', amountForQR);
       }
 
-      // 🔥 ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если сумма делится на 100, значит проблема с форматом
-      if (amount > 0 && amount % 100 === 0 && amount < 100000) {
-        console.log('Amount looks like it might be in kopecks, checking...');
-        // Проверяем оригинальную строку
-        const originalAmount = data.payment?.amount;
-        if (originalAmount && typeof originalAmount === 'string') {
-          // Пробуем разные варианты парсинга
-          const testAmount1 = parseFloat(originalAmount);
-          const testAmount2 = parseInt(originalAmount, 10);
-          console.log('Different parsing attempts:', { testAmount1, testAmount2 });
-        }
-      }
+      console.log('Final amounts - Display:', amountInRub, 'RUB, QR:', amountForQR, 'kopecks');
 
-      console.log('Final amount for QR:', amount);
-
-      // 🔥 ГЕНЕРИРУЕМ QR КОД
+      // 🔥 ГЕНЕРИРУЕМ QR КОД С СУММОЙ В КОПЕЙКАХ
       const payload = {
-        sum: amount,
+        sum: amountForQR, // 🔥 ОТПРАВЛЯЕМ СУММУ В КОПЕЙКАХ
         qr_size: 400,
         payment_purpose: "Оплата услуг перевода",
         notification_url: "https://perevod-rus.ru/callback/"
@@ -94,7 +83,7 @@ module.exports = async (req, res) => {
       const qrResult = await qrResponse.json();
       console.log('QR generated successfully');
 
-      // 🔥 СОЗДАЕМ HTML ФОРМУ
+      // 🔥 СОЗДАЕМ HTML ФОРМУ (показываем сумму в рублях)
       const htmlForm = `
 <!DOCTYPE html>
 <html>
@@ -127,13 +116,13 @@ module.exports = async (req, res) => {
             color: #27ae60;
             margin: 20px 0;
         }
-        .amount-debug {
-            background: #fff3cd;
+        .amount-info {
+            background: #e3f2fd;
             padding: 10px;
             border-radius: 5px;
             margin: 10px 0;
             font-size: 14px;
-            color: #856404;
+            color: #1976d2;
         }
         .qr-code {
             max-width: 100%;
@@ -155,14 +144,12 @@ module.exports = async (req, res) => {
     <div class="container">
         <h1>💳 Оплата заказа</h1>
         
-        <!-- Отладочная информация -->
-        <div class="amount-debug">
-            <strong>Отладочная информация:</strong><br>
-            Сумма из Creatium: ${data.payment?.amount || 'не указана'}<br>
-            Итоговая сумма: ${amount} руб.
+        <!-- Информация о сумме -->
+        <div class="amount-info">
+            <strong>Сумма к оплате:</strong>
         </div>
         
-        <div class="amount">${amount} руб.</div>
+        <div class="amount">${amountInRub} руб.</div>
         
         <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
         
@@ -170,7 +157,12 @@ module.exports = async (req, res) => {
             <strong>Как оплатить:</strong><br>
             1. Откройте приложение вашего банка<br>
             2. Наведите камеру на QR-код<br>
-            3. Подтвердите оплату
+            3. Подтвердите оплату ${amountInRub} руб.<br>
+            4. Дождитесь уведомления
+        </div>
+        
+        <div style="color: #666; margin-top: 15px; font-size: 14px;">
+            QR-код содержит сумму ${amountInRub} руб. (${amountForQR} коп.)
         </div>
     </div>
 </body>
@@ -180,13 +172,13 @@ module.exports = async (req, res) => {
       const response = {
         success: true,
         form: htmlForm,
-        url: `https://creatium-qr.vercel.app/?sum=${amount}`,
-        amount: amount,
+        url: `https://creatium-qr.vercel.app/?sum=${amountInRub}`,
+        amount: amountInRub,
         order_id: data.order?.id,
         payment_id: data.payment?.id
       };
 
-      console.log('Returning response with amount:', amount);
+      console.log('Returning response with amount:', amountInRub, 'RUB');
       
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       return res.status(200).json(response);
@@ -223,10 +215,16 @@ module.exports = async (req, res) => {
 
       console.log('Direct GET request:', { sum, order_id });
 
+      // 🔥 ДЛЯ GET ТАКЖЕ ПРЕОБРАЗУЕМ В КОПЕЙКИ
+      const amountInRub = parseFloat(sum);
+      const amountForQR = Math.round(amountInRub * 100);
+
+      console.log('GET amounts - Display:', amountInRub, 'RUB, QR:', amountForQR, 'kopecks');
+
       const payload = {
-        sum: parseFloat(sum),
+        sum: amountForQR, // 🔥 ОТПРАВЛЯЕМ СУММУ В КОПЕЙКАХ
         qr_size: 400,
-        payment_purpose: "Оплата услуг перевода",
+        payment_purpose: "Оплата услуг перевода", 
         notification_url: "https://perevod-rus.ru/callback/"
       };
 
@@ -246,7 +244,7 @@ module.exports = async (req, res) => {
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Оплата ${sum} руб.</title>
+    <title>Оплата ${amountInRub} руб.</title>
     <style>
         body { 
             font-family: Arial; 
@@ -278,16 +276,29 @@ module.exports = async (req, res) => {
             padding: 10px;
             background: white;
         }
+        .amount-info {
+            background: #e3f2fd;
+            padding: 8px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-size: 12px;
+            color: #1976d2;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>💳 Оплата заказа</h2>
         ${order_id ? `<div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0; color: #1976d2;">Заказ #${order_id}</div>` : ''}
-        <div class="amount">${sum} руб.</div>
+        
+        <div class="amount-info">
+            Сумма: ${amountInRub} руб. (${amountForQR} коп.)
+        </div>
+        
+        <div class="amount">${amountInRub} руб.</div>
         <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
         <div style="margin-top: 20px; color: #666;">
-            Отсканируйте QR-код для оплаты
+            Отсканируйте QR-код для оплаты ${amountInRub} руб.
         </div>
     </div>
 </body>
