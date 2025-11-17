@@ -32,20 +32,38 @@ module.exports = async (req, res) => {
         data = JSON.parse(body);
       }
       
-      console.log('Creatium data structure:', {
-        has_payment: !!data.payment,
-        has_cart: !!data.cart,
-        has_order: !!data.order,
-        payment_amount: data.payment?.amount,
-        cart_subtotal: data.cart?.subtotal
-      });
+      console.log('Raw payment amount:', data.payment?.amount);
+      console.log('Raw cart subtotal:', data.cart?.subtotal);
 
-      // Извлекаем сумму из данных Creatium
+      // 🔥 ИСПРАВЛЕННЫЙ РАСЧЕТ СУММЫ
       let amount = 100;
+      
       if (data.payment && data.payment.amount) {
-        amount = parseFloat(data.payment.amount);
+        // Преобразуем строку "1000.000000" в число 1000
+        const amountStr = data.payment.amount;
+        console.log('Amount string from payment:', amountStr);
+        
+        // Убираем лишние нули и преобразуем в число
+        amount = parseFloat(amountStr);
+        console.log('Parsed amount from payment:', amount);
+        
       } else if (data.cart && data.cart.subtotal) {
+        // Если subtotal уже число, используем как есть
         amount = data.cart.subtotal;
+        console.log('Amount from cart subtotal:', amount);
+      }
+
+      // 🔥 ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если сумма делится на 100, значит проблема с форматом
+      if (amount > 0 && amount % 100 === 0 && amount < 100000) {
+        console.log('Amount looks like it might be in kopecks, checking...');
+        // Проверяем оригинальную строку
+        const originalAmount = data.payment?.amount;
+        if (originalAmount && typeof originalAmount === 'string') {
+          // Пробуем разные варианты парсинга
+          const testAmount1 = parseFloat(originalAmount);
+          const testAmount2 = parseInt(originalAmount, 10);
+          console.log('Different parsing attempts:', { testAmount1, testAmount2 });
+        }
       }
 
       console.log('Final amount for QR:', amount);
@@ -58,7 +76,7 @@ module.exports = async (req, res) => {
         notification_url: "https://perevod-rus.ru/callback/"
       };
 
-      console.log('Sending to QR service...');
+      console.log('Sending to QR service with payload:', payload);
 
       const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
         method: "POST",
@@ -109,6 +127,14 @@ module.exports = async (req, res) => {
             color: #27ae60;
             margin: 20px 0;
         }
+        .amount-debug {
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-size: 14px;
+            color: #856404;
+        }
         .qr-code {
             max-width: 100%;
             border: 2px solid #3498db;
@@ -128,8 +154,18 @@ module.exports = async (req, res) => {
 <body>
     <div class="container">
         <h1>💳 Оплата заказа</h1>
+        
+        <!-- Отладочная информация -->
+        <div class="amount-debug">
+            <strong>Отладочная информация:</strong><br>
+            Сумма из Creatium: ${data.payment?.amount || 'не указана'}<br>
+            Итоговая сумма: ${amount} руб.
+        </div>
+        
         <div class="amount">${amount} руб.</div>
+        
         <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
+        
         <div class="instructions">
             <strong>Как оплатить:</strong><br>
             1. Откройте приложение вашего банка<br>
@@ -141,54 +177,19 @@ module.exports = async (req, res) => {
 </html>
       `;
 
-      // 🔥 ВАРИАНТ 1: Стандартный формат Creatium
-      const responseV1 = {
+      const response = {
         success: true,
         form: htmlForm,
         url: `https://creatium-qr.vercel.app/?sum=${amount}`,
-        redirect: `https://creatium-qr.vercel.app/?sum=${amount}`,
         amount: amount,
         order_id: data.order?.id,
         payment_id: data.payment?.id
       };
 
-      // 🔥 ВАРИАНТ 2: Формат с html полем
-      const responseV2 = {
-        success: true,
-        html: htmlForm,
-        form: htmlForm,
-        url: `https://creatium-qr.vercel.app/?sum=${amount}`
-      };
-
-      // 🔥 ВАРИАНТ 3: Минимальный формат
-      const responseV3 = {
-        form: htmlForm,
-        url: `https://creatium-qr.vercel.app/?sum=${amount}`
-      };
-
-      // 🔥 ВАРИАНТ 4: Только URL (Creatium сам откроет страницу)
-      const responseV4 = {
-        url: `https://creatium-qr.vercel.app/?sum=${amount}&order_id=${data.order?.id}`,
-        success: true
-      };
-
-      // 🔥 ВАРИАНТ 5: Формат с платежными данными
-      const responseV5 = {
-        success: true,
-        data: {
-          form: htmlForm,
-          payment_url: `https://creatium-qr.vercel.app/?sum=${amount}`,
-          amount: amount,
-          currency: "RUB",
-          order_id: data.order?.id
-        }
-      };
-
-      console.log('Testing response format V1 (standard)...');
+      console.log('Returning response with amount:', amount);
       
-      // 🔥 ОТПРАВЛЯЕМ СТАНДАРТНЫЙ ФОРМАТ
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      return res.status(200).json(responseV1);
+      return res.status(200).json(response);
 
     } catch (error) {
       console.error('Error processing payment:', error);
@@ -277,26 +278,16 @@ module.exports = async (req, res) => {
             padding: 10px;
             background: white;
         }
-        .order-info {
-            background: #e3f2fd;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            color: #1976d2;
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>💳 Оплата заказа</h2>
-        ${order_id ? `<div class="order-info">Заказ #${order_id}</div>` : ''}
+        ${order_id ? `<div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0; color: #1976d2;">Заказ #${order_id}</div>` : ''}
         <div class="amount">${sum} руб.</div>
         <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
         <div style="margin-top: 20px; color: #666;">
             Отсканируйте QR-код для оплаты
-        </div>
-        <div style="margin-top: 15px; font-size: 14px; color: #888;">
-            После оплаты закройте эту страницу
         </div>
     </div>
 </body>
