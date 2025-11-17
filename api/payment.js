@@ -173,6 +173,7 @@ module.exports = async (req, res) => {
       }
       
       const statusResult = await checkPaymentStatus(operationId);
+      console.log(`Status check result for ${operationId}:`, statusResult);
       return res.status(200).json(statusResult);
       
     } catch (error) {
@@ -286,7 +287,7 @@ module.exports = async (req, res) => {
         throw new Error('QR code generation failed');
       }
 
-      // 🔥 СОЗДАЕМ HTML ФОРМУ
+      // 🔥 СОЗДАЕМ HTML ФОРМУ С ДЕТАЛЬНОЙ ОТЛАДКОЙ
       const htmlForm = `
 <!DOCTYPE html>
 <html>
@@ -297,7 +298,7 @@ module.exports = async (req, res) => {
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 500px;
+            max-width: 600px;
             margin: 0 auto;
             padding: 20px;
             background: #f5f5f5;
@@ -386,12 +387,25 @@ module.exports = async (req, res) => {
         }
         .debug-info {
             background: #f8f9fa;
-            padding: 10px;
+            padding: 15px;
             border-radius: 5px;
             margin: 10px 0;
             font-size: 12px;
             color: #6c757d;
             text-align: left;
+            border: 1px dashed #dee2e6;
+        }
+        .log-container {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 11px;
+            text-align: left;
+            max-height: 200px;
+            overflow-y: auto;
         }
     </style>
 </head>
@@ -415,9 +429,19 @@ module.exports = async (req, res) => {
             • <strong>Авто-возврат ТОЛЬКО при статусе "5"</strong>
         </div>
 
+        <!-- Логи в реальном времени -->
+        <div class="debug-info">
+            <strong>Логи проверки статуса:</strong>
+            <div id="logContainer" class="log-container">
+                > Начинаем мониторинг оплаты...\n
+                > Operation ID: ${operationId}\n
+                > Проверка каждые 10 секунд\n
+            </div>
+        </div>
+
         <!-- Статус проверки -->
         <div id="checkingStatus" class="checking-status">
-            🔍 Первая проверка через 10 секунд...
+            🔍 Первая проверка через 5 секунд...
         </div>
 
         <!-- Сообщения о статусе -->
@@ -439,12 +463,13 @@ module.exports = async (req, res) => {
             • Operation ID: <code>${operationId}</code><br>
             • Order ID: ${orderId}<br>
             • Сумма: ${amountInRub} руб.<br>
-            • <strong>Требуется статус: 5 (Оплачено)</strong>
+            • <strong>Требуется статус: 5 (Оплачено)</strong><br>
+            • <strong>Проверки: <span id="checkCount">0</span></strong>
         </div>
 
         <!-- Кнопки управления -->
         <div style="margin-top: 20px;">
-            <button id="checkStatusBtn" class="button button-check">🔄 Проверить статус</button>
+            <button id="checkStatusBtn" class="button button-check">🔄 Проверить статус сейчас</button>
             <a href="${successUrl}" id="manualSuccessBtn" class="button button-success">✅ Я оплатил (вручную)</a>
             <a href="${failUrl}" class="button button-cancel">❌ Отмена</a>
         </div>
@@ -456,10 +481,38 @@ module.exports = async (req, res) => {
         
         let checkInterval;
         let paidStatus = false;
+        let checkCount = 0;
+
+        // Элементы DOM
+        const checkingStatus = document.getElementById('checkingStatus');
+        const successMessage = document.getElementById('successMessage');
+        const pendingMessage = document.getElementById('pendingMessage');
+        const countdown = document.getElementById('countdown');
+        const timer = document.getElementById('timer');
+        const statusInfo = document.getElementById('statusInfo');
+        const checkStatusBtn = document.getElementById('checkStatusBtn');
+        const manualSuccessBtn = document.getElementById('manualSuccessBtn');
+        const logContainer = document.getElementById('logContainer');
+        const checkCountElement = document.getElementById('checkCount');
+
+        // Функция для добавления логов
+        function addLog(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            logContainer.innerHTML += '> [' + timestamp + '] ' + message + '\\n';
+            logContainer.scrollTop = logContainer.scrollHeight;
+            console.log(message);
+        }
 
         // Функция проверки статуса платежа
         async function checkPaymentStatus() {
+            checkCount++;
+            checkCountElement.textContent = checkCount;
+            
             try {
+                checkingStatus.style.display = 'block';
+                checkingStatus.textContent = '🔍 Проверяем статус платежа...';
+                addLog('Проверка #' + checkCount + '...');
+                
                 const response = await fetch('/api/check-status', {
                     method: 'POST',
                     headers: {
@@ -471,35 +524,48 @@ module.exports = async (req, res) => {
                 });
                 
                 const result = await response.json();
+                addLog('Ответ API: статус ' + result.status + ', код: ' + (result.data?.results?.operation_status_code || 'unknown'));
                 console.log('Status check result:', result);
+                
+                checkingStatus.style.display = 'none';
                 
                 if (result.success && result.status === 'paid') {
                     // 🔥 ПЛАТЕЖ УСПЕШЕН
                     paidStatus = true;
-                    showSuccess();
+                    addLog('🎉 ОПЛАЧЕНО! Статус 5 обнаружен!');
+                    showSuccess(result.message, result.data);
                 } else {
                     // 🔥 НЕ ОПЛАЧЕНО
                     const statusCode = result.data?.results?.operation_status_code;
                     const statusMsg = result.data?.results?.operation_status_msg;
+                    addLog('❌ Не оплачено. Код: ' + statusCode + ', Сообщение: "' + (statusMsg || 'не оплачено') + '"');
                     showPending(statusCode, statusMsg);
                 }
                 
             } catch (error) {
                 console.error('Status check failed:', error);
+                addLog('❌ Ошибка проверки: ' + error.message);
+                checkingStatus.style.display = 'none';
                 showPending('error', 'Ошибка проверки');
             }
         }
 
         // Показать успешный статус
-        function showSuccess() {
-            document.getElementById('successMessage').style.display = 'block';
-            document.getElementById('pendingMessage').style.display = 'none';
-            document.getElementById('checkStatusBtn').style.display = 'none';
-            document.getElementById('manualSuccessBtn').style.display = 'none';
+        function showSuccess(message, data) {
+            successMessage.style.display = 'block';
+            pendingMessage.style.display = 'none';
+            checkStatusBtn.style.display = 'none';
+            manualSuccessBtn.style.display = 'none';
+            
+            const statusCode = data?.results?.operation_status_code;
+            const statusMsg = data?.results?.operation_status_msg;
+            
+            statusInfo.textContent = statusMsg || message || 'Оплачено';
             
             // Остановить проверку
             if (checkInterval) {
                 clearInterval(checkInterval);
+                addLog('✅ Останавливаем проверку - оплата подтверждена');
             }
             
             // Запустить авто-редирект
@@ -508,20 +574,22 @@ module.exports = async (req, res) => {
 
         // Показать ожидание
         function showPending(statusCode, statusMsg) {
-            document.getElementById('successMessage').style.display = 'none';
-            document.getElementById('pendingMessage').style.display = 'block';
-            document.getElementById('statusInfo').textContent = 'код ' + statusCode + ' - ' + (statusMsg || 'не оплачено');
+            successMessage.style.display = 'none';
+            pendingMessage.style.display = 'block';
+            statusInfo.textContent = 'код ' + statusCode + ' - ' + (statusMsg || 'не оплачено');
         }
 
         // Автоматическое перенаправление
         function startAutoRedirect() {
             let seconds = 5;
+            addLog('🔄 Авто-редирект через ' + seconds + ' сек...');
             const countdownInterval = setInterval(() => {
                 seconds--;
-                document.getElementById('timer').textContent = seconds;
+                timer.textContent = seconds;
                 
                 if (seconds <= 0) {
                     clearInterval(countdownInterval);
+                    addLog('🔄 Выполняем авто-редирект на сайт...');
                     window.location.href = successUrl;
                 }
             }, 1000);
@@ -529,19 +597,21 @@ module.exports = async (req, res) => {
 
         // Начать автоматическую проверку
         function startAutoCheck() {
-            // Первая проверка через 10 секунд
+            // Первая проверка через 5 секунд
             setTimeout(() => {
                 checkPaymentStatus();
-                // Дальнейшие проверки каждые 15 секунд
-                checkInterval = setInterval(checkPaymentStatus, 15000);
-            }, 10000);
+                // Дальнейшие проверки каждые 10 секунд
+                checkInterval = setInterval(checkPaymentStatus, 10000);
+            }, 5000);
         }
 
         // Ручная проверка по кнопке
-        document.getElementById('checkStatusBtn').addEventListener('click', checkPaymentStatus);
+        checkStatusBtn.addEventListener('click', checkPaymentStatus);
 
         // Запуск при загрузке
-        console.log('Starting payment monitoring for operation:', operationId);
+        addLog('🚀 Запуск мониторинга платежа...');
+        addLog('🎯 Operation ID: ' + operationId);
+        addLog('⏰ Проверка каждые 10 секунд');
         startAutoCheck();
 
     </script>
