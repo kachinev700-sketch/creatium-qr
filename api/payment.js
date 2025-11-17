@@ -283,8 +283,170 @@ module.exports = async (req, res) => {
         throw new Error('QR code generation failed');
       }
 
-      // 🔥 СОЗДАЕМ HTML ФОРМУ
-      const htmlForm = `
+      // 🔥 СОЗДАЕМ HTML ФОРМУ С МОНИТОРИНГОМ
+      const htmlForm = createPaymentPage(orderId, operationId, paymentId, amountInRub, qrResult.results.qr_img, successUrl, failUrl);
+      
+      const response = {
+        success: true,
+        form: htmlForm,
+        url: `https://creatium-qr.vercel.app/?sum=${amountInRub}&order_id=${orderId}&operation_id=${operationId}`,
+        amount: amountInRub,
+        order_id: orderId,
+        payment_id: paymentId,
+        operation_id: operationId
+      };
+
+      console.log('✅ Returning successful response to Creatium');
+      
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      return res.status(200).json(response);
+
+    } catch (error) {
+      console.error('❌ Error processing payment:', error);
+      
+      const errorHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Ошибка</title></head>
+<body style="font-family: Arial; text-align: center; padding: 50px;">
+  <h2 style="color: #e74c3c;">❌ Ошибка оплаты</h2>
+  <p>${error.message}</p>
+  <a href="https://perevod-rus.ru" style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px;">
+    Вернуться на сайт
+  </a>
+</body>
+</html>
+      `;
+      
+      console.log('📤 Returning error response to Creatium');
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      return res.status(200).json({
+        success: false,
+        error: error.message,
+        form: errorHtml
+      });
+    }
+  }
+
+  // 🔥 ОБРАБОТКА GET ЗАПРОСА ОТ CREATIUM (когда Creatium открывает страницу)
+  if (req.method === 'GET' && !req.url.includes('favicon') && !req.url.includes('.png')) {
+    try {
+      const urlParams = new URLSearchParams(req.url.split('?')[1]);
+      const sum = urlParams.get('sum');
+      const order_id = urlParams.get('order_id');
+      const operation_id = urlParams.get('operation_id');
+
+      console.log('GET request from Creatium:', { sum, order_id, operation_id });
+
+      // 🔥 ЕСЛИ ЕСТЬ ПАРАМЕТРЫ ОТ CREATIUM - ВОЗВРАЩАЕМ ПОЛНУЮ СТРАНИЦУ С МОНИТОРИНГОМ
+      if (sum && order_id && operation_id) {
+        console.log('Generating full payment page with QR code and monitoring for Creatium');
+        
+        const amountInRub = parseFloat(sum);
+        const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id}&operation_id=${operation_id}&status=success&paid=true`;
+        const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${order_id}&status=failed&paid=false`;
+
+        // 🔥 ГЕНЕРИРУЕМ QR КОД ДЛЯ GET ЗАПРОСА
+        const amountForQR = Math.round(amountInRub * 100);
+        const payload = {
+          sum: amountForQR,
+          qr_size: 400,
+          payment_purpose: "Оплата услуг перевода с иностранных языков",
+          notification_url: `https://creatium-qr.vercel.app/api/callback?order_id=${order_id}&operation_id=${operation_id}`
+        };
+
+        console.log('Generating QR code for GET request...');
+        const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Api-Key": API_KEY
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!qrResponse.ok) {
+          throw new Error(`QR service error: ${qrResponse.status}`);
+        }
+
+        const qrResult = await qrResponse.json();
+        console.log('QR generated for GET request');
+
+        // 🔥 ВОЗВРАЩАЕМ ПОЛНУЮ HTML СТРАНИЦУ С МОНИТОРИНГОМ
+        const html = createPaymentPage(order_id, operation_id, 'from_get', amountInRub, qrResult.results.qr_img, successUrl, failUrl);
+        
+        res.setHeader('Content-Type', 'text/html');
+        return res.status(200).send(html);
+      }
+
+      // Если это обычный GET запрос без параметров - генерируем тестовый QR
+      const amountInRub = parseFloat(sum || '100');
+      const amountForQR = Math.round(amountInRub * 100);
+
+      const payload = {
+        sum: amountForQR,
+        qr_size: 400,
+        payment_purpose: "Оплата услуг перевода с иностранных языков",
+        notification_url: 'https://creatium-qr.vercel.app/api/callback'
+      };
+
+      const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Api-Key": API_KEY
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!qrResponse.ok) {
+        throw new Error(`QR service error: ${qrResponse.status}`);
+      }
+
+      const qrResult = await qrResponse.json();
+      
+      let operationId = qrResult.results?.operation_id || `test_${Date.now()}`;
+
+      const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id || 'test'}&operation_id=${operationId}&status=success&paid=true`;
+      const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${order_id || 'test'}&status=failed&paid=false`;
+
+      const html = createPaymentPage(order_id || 'test', operationId, 'test', amountInRub, qrResult.results.qr_img, successUrl, failUrl);
+
+      res.setHeader('Content-Type', 'text/html');
+      return res.status(200).send(html);
+
+    } catch (error) {
+      console.error('GET Error:', error);
+      
+      const errorHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Ошибка</title></head>
+<body style="font-family: Arial; text-align: center; padding: 50px;">
+  <h2>❌ Ошибка</h2>
+  <p>${error.message}</p>
+  <a href="https://perevod-rus.ru" style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px;">
+    Вернуться на сайт
+  </a>
+</body>
+</html>
+      `;
+      
+      res.setHeader('Content-Type', 'text/html');
+      return res.status(200).send(errorHtml);
+    }
+  }
+
+  // Если метод не поддерживается или путь не найден
+  return res.status(404).json({
+    error: 'Not found',
+    message: 'Endpoint not found'
+  });
+};
+
+// 🔥 ФУНКЦИЯ ДЛЯ СОЗДАНИЯ СТРАНИЦЫ ОПЛАТЫ
+function createPaymentPage(orderId, operationId, paymentId, amountInRub, qrImage, successUrl, failUrl) {
+  return `
 <!DOCTYPE html>
 <html>
 <head>
@@ -416,7 +578,7 @@ module.exports = async (req, res) => {
         
         <div class="amount">${amountInRub} руб.</div>
         
-        <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
+        <img src="${qrImage}" alt="QR Code" class="qr-code">
         
         <div class="instructions">
             <strong>Автоматическая проверка статуса оплаты</strong><br>
@@ -429,9 +591,9 @@ module.exports = async (req, res) => {
         <div class="debug-info">
             <strong>Логи проверки статуса:</strong>
             <div id="logContainer" class="log-container">
-                > Начинаем мониторинг оплаты...\n
-                > Operation ID: ${operationId}\n
-                > Проверка каждые 10 секунд\n
+                > 🚀 Запуск мониторинга платежа...\n
+                > 🎯 Operation ID: ${operationId}\n
+                > ⏰ Проверка каждые 10 секунд\n
             </div>
         </div>
 
@@ -613,307 +775,5 @@ module.exports = async (req, res) => {
     </script>
 </body>
 </html>
-      `;
-
-      const response = {
-        success: true,
-        form: htmlForm,
-        url: `https://creatium-qr.vercel.app/?sum=${amountInRub}&order_id=${orderId}&operation_id=${operationId}`,
-        amount: amountInRub,
-        order_id: orderId,
-        payment_id: paymentId,
-        operation_id: operationId
-      };
-
-      console.log('✅ Returning successful response to Creatium');
-      
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      return res.status(200).json(response);
-
-    } catch (error) {
-      console.error('❌ Error processing payment:', error);
-      
-      const errorHtml = `
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Ошибка</title></head>
-<body style="font-family: Arial; text-align: center; padding: 50px;">
-  <h2 style="color: #e74c3c;">❌ Ошибка оплаты</h2>
-  <p>${error.message}</p>
-  <a href="https://perevod-rus.ru" style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px;">
-    Вернуться на сайт
-  </a>
-</body>
-</html>
-      `;
-      
-      console.log('📤 Returning error response to Creatium');
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      return res.status(200).json({
-        success: false,
-        error: error.message,
-        form: errorHtml
-      });
-    }
-  }
-
-  // 🔥 ОБРАБОТКА GET ЗАПРОСА ОТ CREATIUM (когда Creatium открывает страницу)
-  if (req.method === 'GET' && !req.url.includes('favicon') && !req.url.includes('.png')) {
-    try {
-      const urlParams = new URLSearchParams(req.url.split('?')[1]);
-      const sum = urlParams.get('sum');
-      const order_id = urlParams.get('order_id');
-      const operation_id = urlParams.get('operation_id');
-
-      console.log('GET request from Creatium:', { sum, order_id, operation_id });
-
-      // 🔥 ЕСЛИ ЕСТЬ ПАРАМЕТРЫ ОТ CREATIUM - ВОЗВРАЩАЕМ СТРАНИЦУ С QR-КОДОМ
-      if (sum && order_id && operation_id) {
-        console.log('Generating full payment page with QR code for Creatium');
-        
-        const amountInRub = parseFloat(sum);
-        const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id}&operation_id=${operation_id}&status=success&paid=true`;
-        const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${order_id}&status=failed&paid=false`;
-
-        // 🔥 ГЕНЕРИРУЕМ QR КОД ДЛЯ GET ЗАПРОСА
-        const amountForQR = Math.round(amountInRub * 100);
-        const payload = {
-          sum: amountForQR,
-          qr_size: 400,
-          payment_purpose: "Оплата услуг перевода с иностранных языков",
-          notification_url: `https://creatium-qr.vercel.app/api/callback?order_id=${order_id}&operation_id=${operation_id}`
-        };
-
-        console.log('Generating QR code for GET request...');
-        const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Api-Key": API_KEY
-          },
-          body: JSON.stringify(payload)
-        });
-
-        if (!qrResponse.ok) {
-          throw new Error(`QR service error: ${qrResponse.status}`);
-        }
-
-        const qrResult = await qrResponse.json();
-        console.log('QR generated for GET request');
-
-        // 🔥 ВОЗВРАЩАЕМ ПОЛНУЮ HTML СТРАНИЦУ С QR-КОДОМ
-        const html = `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Оплата заказа #${order_id}</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }
-        .container {
-            background: white;
-            padding: 30px;
-            border-radius: 15px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-            text-align: center;
-        }
-        h1 {
-            color: #2c3e50;
-            margin-bottom: 20px;
-        }
-        .amount {
-            font-size: 32px;
-            font-weight: bold;
-            color: #27ae60;
-            margin: 20px 0;
-        }
-        .qr-code {
-            max-width: 100%;
-            border: 2px solid #3498db;
-            border-radius: 10px;
-            padding: 10px;
-            background: white;
-        }
-        .instructions {
-            background: #e3f2fd;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 20px 0;
-            text-align: left;
-        }
-        .order-info {
-            background: #fff3cd;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            color: #856404;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>💳 Оплата заказа</h1>
-        
-        <div class="order-info">
-            <strong>Заказ #${order_id}</strong><br>
-            <small>ID операции: ${operation_id}</small>
-        </div>
-        
-        <div class="amount">${amountInRub} руб.</div>
-        
-        <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
-        
-        <div class="instructions">
-            <strong>Автоматическая проверка статуса оплаты</strong><br>
-            • Отсканируйте QR-код и оплатите<br>
-            • Система проверит статус автоматически<br>
-            • <strong>Авто-возврат ТОЛЬКО при статусе "5"</strong>
-        </div>
-
-        <div style="margin-top: 20px;">
-            <a href="${successUrl}" class="button button-success" style="background: #27ae60; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 5px;">
-                ✅ Я оплатил (вручную)
-            </a>
-            <a href="${failUrl}" class="button button-cancel" style="background: #e74c3c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 5px;">
-                ❌ Отмена
-            </a>
-        </div>
-    </div>
-</body>
-</html>
-        `;
-
-        res.setHeader('Content-Type', 'text/html');
-        return res.status(200).send(html);
-      }
-
-      // Если это обычный GET запрос без параметров - генерируем тестовый QR
-      const amountInRub = parseFloat(sum || '100');
-      const amountForQR = Math.round(amountInRub * 100);
-
-      const payload = {
-        sum: amountForQR,
-        qr_size: 400,
-        payment_purpose: "Оплата услуг перевода с иностранных языков",
-        notification_url: 'https://creatium-qr.vercel.app/api/callback'
-      };
-
-      const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Api-Key": API_KEY
-        },
-        body: JSON.stringify(payload)
-      });
-
-      if (!qrResponse.ok) {
-        throw new Error(`QR service error: ${qrResponse.status}`);
-      }
-
-      const qrResult = await qrResponse.json();
-      
-      let operationId = qrResult.results?.operation_id || `test_${Date.now()}`;
-
-      const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id || 'test'}&operation_id=${operationId}&status=success&paid=true`;
-      const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${order_id || 'test'}&status=failed&paid=false`;
-
-      const html = `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Тест оплаты ${amountInRub} руб.</title>
-    <style>
-        body { 
-            font-family: Arial; 
-            text-align: center; 
-            padding: 50px; 
-            background: #f5f5f5; 
-        }
-        .container { 
-            background: white; 
-            padding: 30px; 
-            border-radius: 15px; 
-            display: inline-block;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-        }
-        h2 { 
-            color: #333; 
-            margin-bottom: 20px;
-        }
-        .amount { 
-            color: #27ae60; 
-            font-size: 28px; 
-            font-weight: bold; 
-            margin: 20px 0; 
-        }
-        .qr-code { 
-            max-width: 300px; 
-            border: 3px solid #3498db; 
-            border-radius: 10px; 
-            padding: 10px;
-            background: white;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h2>💳 Тест оплаты</h2>
-        <div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0; color: #1976d2;">
-            Заказ #${order_id || 'test'}<br>
-            <small>Operation ID: ${operationId}</small>
-        </div>
-        <div class="amount">${amountInRub} руб.</div>
-        <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
-        <div style="margin-top: 20px;">
-            <a href="${successUrl}" style="background: #27ae60; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 5px;">
-                ✅ Тест успеха
-            </a>
-            <a href="${failUrl}" style="background: #e74c3c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 5px;">
-                ❌ Тест отмены
-            </a>
-        </div>
-    </div>
-</body>
-</html>
-      `;
-
-      res.setHeader('Content-Type', 'text/html');
-      return res.status(200).send(html);
-
-    } catch (error) {
-      console.error('GET Error:', error);
-      
-      const errorHtml = `
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Ошибка</title></head>
-<body style="font-family: Arial; text-align: center; padding: 50px;">
-  <h2>❌ Ошибка</h2>
-  <p>${error.message}</p>
-  <a href="https://perevod-rus.ru" style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px;">
-    Вернуться на сайт
-  </a>
-</body>
-</html>
-      `;
-      
-      res.setHeader('Content-Type', 'text/html');
-      return res.status(200).send(errorHtml);
-    }
-  }
-
-  // Если метод не поддерживается или путь не найден
-  return res.status(404).json({
-    error: 'Not found',
-    message: 'Endpoint not found'
-  });
-};
+  `;
+}
