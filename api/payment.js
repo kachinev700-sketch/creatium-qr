@@ -16,15 +16,15 @@ async function checkPaymentStatus(operationId) {
 
     if (statusResponse.ok) {
       const statusData = await statusResponse.json();
-      console.log('Payment status response:', statusData);
+      console.log('✅ Payment status API response:', JSON.stringify(statusData, null, 2));
       
       // 🔥 АНАЛИЗИРУЕМ СТАТУС ОПЕРАЦИИ
       const statusCode = statusData.results?.operation_status_code;
       const statusMsg = statusData.results?.operation_status_msg;
       
-      console.log(`Status: ${statusCode} - ${statusMsg}`);
+      console.log(`📊 Status Code: ${statusCode}, Message: "${statusMsg}"`);
       
-      // Предполагаемые коды статусов (уточните у поставщика)
+      // 🔥 ВАЖНО: ТОЛЬКО КОД 5 - ОПЛАЧЕНО, ВСЕ ОСТАЛЬНОЕ - НЕ ОПЛАЧЕНО
       if (statusCode === 5) {
         return { 
           success: true, 
@@ -32,39 +32,27 @@ async function checkPaymentStatus(operationId) {
           message: statusMsg,
           data: statusData 
         };
-      } else if (statusCode === 3 || statusCode === 4) {
-        // Возможные коды для "в обработке", "ожидает оплаты"
-        return { 
-          success: false, 
-          status: 'pending',
-          message: statusMsg,
-          data: statusData 
-        };
-      } else if (statusCode === 6 || statusCode === 7) {
-        // Возможные коды для "отменено", "ошибка"
-        return { 
-          success: false, 
-          status: 'failed',
-          message: statusMsg,
-          data: statusData 
-        };
       } else {
-        // Неизвестный статус
+        // 🔥 ВСЕ ДРУГИЕ КОДЫ - НЕ ОПЛАЧЕНО
         return { 
           success: false, 
-          status: 'unknown',
-          message: statusMsg || 'Unknown status',
+          status: 'not_paid',
+          message: statusMsg || `Статус: ${statusCode}`,
           data: statusData 
         };
       }
     } else {
       const errorText = await statusResponse.text();
-      console.error(`Status check failed: ${statusResponse.status}`, errorText);
-      throw new Error(`Status check failed: ${statusResponse.status}`);
+      console.error(`❌ Status check failed: ${statusResponse.status}`, errorText);
+      return { 
+        success: false, 
+        status: 'api_error',
+        error: `API error: ${statusResponse.status}` 
+      };
     }
     
   } catch (error) {
-    console.error('Error checking payment status:', error);
+    console.error('❌ Error checking payment status:', error);
     return { 
       success: false, 
       status: 'error',
@@ -116,28 +104,6 @@ module.exports = async (req, res) => {
   }
 
   console.log('API Key loaded:', API_KEY ? '***' + API_KEY.slice(-4) : 'NOT SET');
-
-  // 🔥 ОБРАБОТКА CALLBACK ОТ ПЛАТЕЖНОЙ СИСТЕМЫ
-  if (req.method === 'POST' && req.url.includes('/callback/')) {
-    try {
-      console.log('💰 Payment callback received');
-      
-      let body = '';
-      for await (const chunk of req) {
-        body += chunk;
-      }
-      
-      const callbackData = JSON.parse(body);
-      console.log('Callback data:', JSON.stringify(callbackData, null, 2));
-      
-      // Обрабатываем callback от платежной системы
-      return res.status(200).json({ success: true, message: 'Callback received' });
-      
-    } catch (error) {
-      console.error('Callback error:', error);
-      return res.status(200).json({ success: false, error: error.message });
-    }
-  }
 
   // 🔥 ОБРАБОТКА ПРОВЕРКИ СТАТУСА ПЛАТЕЖА
   if (req.method === 'POST' && req.url.includes('/check-status/')) {
@@ -217,7 +183,7 @@ module.exports = async (req, res) => {
       const successUrl = `https://perevod-rus.ru/payment-success?order_id=${orderId}&payment_id=${paymentId}&status=success&paid=true`;
       const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${orderId}&status=failed&paid=false`;
 
-      // 🔥 ГЕНЕРИРУЕМ QR КОД И ПОЛУЧАЕМ OPERATION_ID
+      // 🔥 ГЕНЕРИРУЕМ QR КОД
       const payload = {
         sum: amountForQR,
         qr_size: 400,
@@ -247,7 +213,6 @@ module.exports = async (req, res) => {
       console.log('QR response:', JSON.stringify(qrResult, null, 2));
 
       // 🔥 ПОЛУЧАЕМ OPERATION_ID ИЗ ОТВЕТА
-      // Нужно проверить структуру ответа от QR-генерации
       let operationId = null;
       
       if (qrResult.results && qrResult.results.operation_id) {
@@ -270,7 +235,7 @@ module.exports = async (req, res) => {
         throw new Error('QR code generation failed');
       }
 
-      // 🔥 СОЗДАЕМ HTML ФОРМУ С РЕАЛЬНОЙ ПРОВЕРКОЙ СТАТУСА
+      // 🔥 СОЗДАЕМ HTML ФОРМУ БЕЗ АВТО-РЕДИРЕКТА
       const htmlForm = `
 <!DOCTYPE html>
 <html>
@@ -328,7 +293,6 @@ module.exports = async (req, res) => {
             padding: 15px;
             border-radius: 8px;
             margin: 20px 0;
-            display: none;
         }
         .status-success {
             background: #d4edda;
@@ -374,11 +338,6 @@ module.exports = async (req, res) => {
             background: #e74c3c;
             color: white;
         }
-        .countdown {
-            font-size: 16px;
-            color: #3498db;
-            margin: 10px 0;
-        }
         .debug-info {
             background: #f8f9fa;
             padding: 10px;
@@ -387,6 +346,14 @@ module.exports = async (req, res) => {
             font-size: 12px;
             color: #6c757d;
             text-align: left;
+        }
+        .warning {
+            background: #fff3cd;
+            color: #856404;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border: 1px solid #ffeaa7;
         }
     </style>
 </head>
@@ -405,9 +372,13 @@ module.exports = async (req, res) => {
         
         <div class="instructions">
             <strong>Автоматическая проверка статуса оплаты</strong><br>
-            1. Отсканируйте QR-код и оплатите<br>
-            2. Система проверит статус каждые 10 секунд<br>
-            3. При успешной оплате - авто-возврат на сайт
+            • Отсканируйте QR-код и оплатите<br>
+            • Система проверит статус автоматически<br>
+            • <strong>Авто-возврат ТОЛЬКО при успешной оплате</strong>
+        </div>
+
+        <div class="warning">
+            ⚠️ <strong>Внимание:</strong> Авто-возврат произойдет только после реального платежа!
         </div>
 
         <!-- Отладочная информация -->
@@ -415,33 +386,46 @@ module.exports = async (req, res) => {
             <strong>Отладка:</strong><br>
             Operation ID: ${operationId}<br>
             Order ID: ${orderId}<br>
-            Сумма: ${amountInRub} руб.
+            Сумма: ${amountInRub} руб.<br>
+            <strong>Только статус 5 = "Оплачено"</strong>
         </div>
 
         <!-- Статус проверки -->
         <div id="checkingStatus" class="checking-status">
-            🔍 Начинаем проверку статуса через 5 секунд...
+            🔍 Начинаем проверку статуса через 10 секунд...
         </div>
 
         <!-- Сообщения о статусе -->
-        <div id="successMessage" class="status-message status-success">
-            ✅ <strong>Оплата прошла успешно!</strong> Возвращаем на сайт...
-            <div id="countdown" class="countdown">Авто-возврат через: <span id="timer">5</span> сек</div>
+        <div id="successMessage" class="status-message status-success" style="display: none;">
+            ✅ <strong>Оплата прошла успешно!</strong><br>
+            <div id="countdown" class="checking-status" style="margin: 10px 0;">
+                Авто-возврат через: <span id="timer">10</span> сек
+            </div>
+            <small>Статус: <span id="statusDetail">Оплачено</span></small>
         </div>
 
-        <div id="pendingMessage" class="status-message status-pending">
-            ⏳ <strong>Ожидание оплаты...</strong> Продолжаем проверку
+        <div id="pendingMessage" class="status-message status-pending" style="display: none;">
+            ⏳ <strong>Ожидание оплаты...</strong><br>
+            <small>Статус: <span id="pendingDetail">Не оплачено</span></small>
         </div>
 
-        <div id="errorMessage" class="status-message status-error">
-            ❌ <strong>Платеж не обнаружен</strong> или произошла ошибка
+        <div id="errorMessage" class="status-message status-error" style="display: none;">
+            ❌ <strong>Ошибка проверки</strong><br>
+            <small id="errorDetail">Не удалось проверить статус</small>
         </div>
 
         <!-- Кнопки управления -->
         <div style="margin-top: 20px;">
             <button id="checkStatusBtn" class="button button-check">🔄 Проверить статус сейчас</button>
-            <a href="${successUrl}" id="successBtn" class="button button-success" style="display: none;">✅ Вернуться на сайт</a>
+            <a href="${successUrl}" id="manualSuccessBtn" class="button button-success">✅ Я оплатил (вручную)</a>
             <a href="${failUrl}" class="button button-cancel">❌ Отмена оплаты</a>
+        </div>
+
+        <div style="color: #666; margin-top: 20px; font-size: 14px; line-height: 1.4;">
+            <strong>Как работает:</strong><br>
+            • Проверка каждые 15 секунд<br>
+            • Авто-возврат ТОЛЬКО при статусе "5"<br>
+            • Все остальные статусы = не оплачено
         </div>
     </div>
 
@@ -452,6 +436,7 @@ module.exports = async (req, res) => {
         
         let checkInterval;
         let isChecking = false;
+        let paidStatus = false;
 
         // Элементы DOM
         const checkingStatus = document.getElementById('checkingStatus');
@@ -460,12 +445,15 @@ module.exports = async (req, res) => {
         const errorMessage = document.getElementById('errorMessage');
         const countdown = document.getElementById('countdown');
         const timer = document.getElementById('timer');
+        const statusDetail = document.getElementById('statusDetail');
+        const pendingDetail = document.getElementById('pendingDetail');
+        const errorDetail = document.getElementById('errorDetail');
         const checkStatusBtn = document.getElementById('checkStatusBtn');
-        const successBtn = document.getElementById('successBtn');
+        const manualSuccessBtn = document.getElementById('manualSuccessBtn');
 
         // Функция проверки статуса платежа
         async function checkPaymentStatus() {
-            if (isChecking) return;
+            if (isChecking || paidStatus) return;
             
             isChecking = true;
             try {
@@ -488,33 +476,35 @@ module.exports = async (req, res) => {
                 checkingStatus.style.display = 'none';
                 
                 if (result.success && result.status === 'paid') {
-                    // Платеж успешен
-                    showSuccess(result.message || 'Оплата прошла успешно');
-                } else if (result.status === 'pending') {
-                    // Платеж еще в обработке
-                    showPending(result.message || 'Ожидание оплаты');
+                    // 🔥 ПЛАТЕЖ УСПЕШЕН - ТОЛЬКО КОГДА СТАТУС 5
+                    paidStatus = true;
+                    showSuccess(result.message, result.data);
                 } else {
-                    // Ошибка или платеж не прошел
-                    showError(result.message || result.error || 'Платеж не обнаружен');
+                    // 🔥 НЕ ОПЛАЧЕНО - ЛЮБОЙ ДРУГОЙ СТАТУС
+                    showPending(result.message, result.data);
                 }
                 
             } catch (error) {
                 console.error('Status check failed:', error);
                 checkingStatus.style.display = 'none';
-                showError('Ошибка проверки статуса');
+                showError('Ошибка проверки статуса: ' + error.message);
             } finally {
                 isChecking = false;
             }
         }
 
         // Показать успешный статус
-        function showSuccess(message) {
+        function showSuccess(message, data) {
             successMessage.style.display = 'block';
-            successMessage.innerHTML = '✅ <strong>' + message + '</strong> Возвращаем на сайт...<div id="countdown" class="countdown">Авто-возврат через: <span id="timer">5</span> сек</div>';
             pendingMessage.style.display = 'none';
             errorMessage.style.display = 'none';
             checkStatusBtn.style.display = 'none';
-            successBtn.style.display = 'inline-block';
+            manualSuccessBtn.style.display = 'none';
+            
+            const statusCode = data?.results?.operation_status_code;
+            const statusMsg = data?.results?.operation_status_msg;
+            
+            statusDetail.textContent = statusMsg || message || 'Оплачено';
             
             // Остановить проверку
             if (checkInterval) {
@@ -525,12 +515,17 @@ module.exports = async (req, res) => {
             startAutoRedirect();
         }
 
-        // Показать ожидание
-        function showPending(message) {
+        // Показать ожидание (не оплачено)
+        function showPending(message, data) {
             successMessage.style.display = 'none';
             pendingMessage.style.display = 'block';
-            pendingMessage.innerHTML = '⏳ <strong>' + message + '</strong> Продолжаем проверку';
             errorMessage.style.display = 'none';
+            
+            const statusCode = data?.results?.operation_status_code;
+            const statusMsg = data?.results?.operation_status_msg;
+            
+            pendingDetail.textContent = statusMsg || message || 'Не оплачено';
+            console.log('📊 Current status:', statusCode, '-', statusMsg);
         }
 
         // Показать ошибку
@@ -538,18 +533,19 @@ module.exports = async (req, res) => {
             successMessage.style.display = 'none';
             pendingMessage.style.display = 'none';
             errorMessage.style.display = 'block';
-            errorMessage.innerHTML = '❌ <strong>' + message + '</strong>';
+            errorDetail.textContent = message;
         }
 
         // Автоматическое перенаправление
         function startAutoRedirect() {
-            let seconds = 5;
+            let seconds = 10;
             const countdownInterval = setInterval(() => {
                 seconds--;
                 timer.textContent = seconds;
                 
                 if (seconds <= 0) {
                     clearInterval(countdownInterval);
+                    console.log('🔄 Auto-redirect to success page');
                     window.location.href = successUrl;
                 }
             }, 1000);
@@ -557,20 +553,39 @@ module.exports = async (req, res) => {
 
         // Начать автоматическую проверку
         function startAutoCheck() {
-            // Первая проверка через 5 секунд
+            // Первая проверка через 10 секунд
             setTimeout(() => {
                 checkPaymentStatus();
-                // Дальнейшие проверки каждые 10 секунд
-                checkInterval = setInterval(checkPaymentStatus, 10000);
-            }, 5000);
+                // Дальнейшие проверки каждые 15 секунд
+                checkInterval = setInterval(checkPaymentStatus, 15000);
+            }, 10000);
         }
 
         // Ручная проверка по кнопке
         checkStatusBtn.addEventListener('click', checkPaymentStatus);
 
+        // Подтверждение для ручного перехода
+        manualSuccessBtn.addEventListener('click', function(e) {
+            if (!paidStatus) {
+                const confirmed = confirm('ВЫ УВЕРЕНЫ, ЧТО ОПЛАТИЛИ ЗАКАЗ?\n\nНажимайте OK только если:\n• Деньги списаны с вашего счета\n• Вы получили подтверждение оплаты\n\nНеправильное подтверждение приведет к ошибке статуса заказа!');
+                if (!confirmed) {
+                    e.preventDefault();
+                }
+            }
+        });
+
         // Запуск при загрузке
         console.log('🚀 Starting payment monitoring for operation:', operationId);
+        console.log('🔒 Auto-redirect will happen ONLY for status code 5');
         startAutoCheck();
+
+        // Предупреждение при закрытии
+        window.addEventListener('beforeunload', function (e) {
+            if (!paidStatus) {
+                e.returnValue = 'Оплата не завершена. Вы уверены, что хотите уйти?';
+                return e.returnValue;
+            }
+        });
     </script>
 </body>
 </html>
@@ -718,7 +733,8 @@ module.exports = async (req, res) => {
         <div class="debug-info">
             <strong>Тестовая информация:</strong><br>
             Operation ID: ${operationId}<br>
-            Для проверки статуса используйте этот ID
+            Для проверки статуса используйте этот ID<br>
+            <strong>Только статус 5 = оплачено!</strong>
         </div>
         
         <div style="margin-top: 20px;">
