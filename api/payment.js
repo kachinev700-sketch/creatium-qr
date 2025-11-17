@@ -160,10 +160,6 @@ module.exports = async (req, res) => {
             3. Подтвердите оплату ${amountInRub} руб.<br>
             4. Дождитесь уведомления
         </div>
-        
-        <div style="color: #666; margin-top: 15px; font-size: 14px;">
-            QR-код содержит сумму ${amountInRub} руб. (${amountForQR} коп.)
-        </div>
     </div>
 </body>
 </html>
@@ -276,24 +272,12 @@ module.exports = async (req, res) => {
             padding: 10px;
             background: white;
         }
-        .amount-info {
-            background: #e3f2fd;
-            padding: 8px;
-            border-radius: 5px;
-            margin: 10px 0;
-            font-size: 12px;
-            color: #1976d2;
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>💳 Оплата заказа</h2>
         ${order_id ? `<div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0; color: #1976d2;">Заказ #${order_id}</div>` : ''}
-        
-        <div class="amount-info">
-            Сумма: ${amountInRub} руб. (${amountForQR} коп.)
-        </div>
         
         <div class="amount">${amountInRub} руб.</div>
         <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
