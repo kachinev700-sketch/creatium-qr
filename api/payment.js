@@ -14,6 +14,8 @@ async function checkPaymentStatus(operationId) {
       }
     });
 
+    console.log(`📡 Status API Response: ${statusResponse.status} ${statusResponse.statusText}`);
+    
     if (statusResponse.ok) {
       const statusData = await statusResponse.json();
       console.log('✅ Payment status API response:', JSON.stringify(statusData, null, 2));
@@ -26,6 +28,7 @@ async function checkPaymentStatus(operationId) {
       
       // 🔥 ВАЖНО: ТОЛЬКО КОД 5 - ОПЛАЧЕНО, ВСЕ ОСТАЛЬНОЕ - НЕ ОПЛАЧЕНО
       if (statusCode === 5) {
+        console.log('🎉 PAYMENT SUCCESSFUL - Status code 5 detected!');
         return { 
           success: true, 
           status: 'paid',
@@ -34,6 +37,7 @@ async function checkPaymentStatus(operationId) {
         };
       } else {
         // 🔥 ВСЕ ДРУГИЕ КОДЫ - НЕ ОПЛАЧЕНО
+        console.log(`❌ PAYMENT NOT DONE - Status code: ${statusCode}, Message: "${statusMsg}"`);
         return { 
           success: false, 
           status: 'not_paid',
@@ -47,7 +51,8 @@ async function checkPaymentStatus(operationId) {
       return { 
         success: false, 
         status: 'api_error',
-        error: `API error: ${statusResponse.status}` 
+        error: `API error: ${statusResponse.status}`,
+        details: errorText
       };
     }
     
@@ -105,8 +110,53 @@ module.exports = async (req, res) => {
 
   console.log('API Key loaded:', API_KEY ? '***' + API_KEY.slice(-4) : 'NOT SET');
 
+  // 🔥 ОБРАБОТКА CALLBACK ОТ ПЛАТЕЖНОЙ СИСТЕМЫ
+  if (req.method === 'POST' && req.url.includes('/callback')) {
+    try {
+      console.log('💰 Payment callback received');
+      
+      let body = '';
+      for await (const chunk of req) {
+        body += chunk;
+      }
+      
+      console.log('Callback raw body:', body);
+      
+      // Парсим callback данные
+      let callbackData = {};
+      if (body && body.trim() !== '') {
+        try {
+          callbackData = JSON.parse(body);
+          console.log('✅ Callback data parsed:', JSON.stringify(callbackData, null, 2));
+        } catch (parseError) {
+          console.error('❌ Callback JSON parse error:', parseError);
+          // Возможно это form-data или другой формат
+          console.log('Raw callback body:', body);
+        }
+      }
+      
+      // 🔥 ОБРАБАТЫВАЕМ CALLBACK - здесь можно обновить статус заказа
+      // Обычно в callback приходит operation_id и статус оплаты
+      const operationId = callbackData.operation_id || callbackData.id;
+      const status = callbackData.status || callbackData.payment_status;
+      
+      console.log(`📞 Callback processed - Operation: ${operationId}, Status: ${status}`);
+      
+      if (status === 'success' || status === 'paid' || status === 'completed') {
+        console.log('🎉 Payment successful via callback!');
+        // Здесь можно обновить статус в Creatium через webhook
+      }
+      
+      return res.status(200).json({ success: true, message: 'Callback received' });
+      
+    } catch (error) {
+      console.error('Callback error:', error);
+      return res.status(200).json({ success: false, error: error.message });
+    }
+  }
+
   // 🔥 ОБРАБОТКА ПРОВЕРКИ СТАТУСА ПЛАТЕЖА
-  if (req.method === 'POST' && req.url.includes('/check-status/')) {
+  if (req.method === 'POST' && req.url.includes('/check-status')) {
     try {
       let body = '';
       for await (const chunk of req) {
@@ -130,7 +180,7 @@ module.exports = async (req, res) => {
   }
 
   // 🔥 ОБРАБОТКА POST ОТ CREATIUM (ОСНОВНОЙ ENDPOINT)
-  if (req.method === 'POST') {
+  if (req.method === 'POST' && !req.url.includes('/callback') && !req.url.includes('/check-status')) {
     try {
       let body = '';
       
@@ -139,19 +189,19 @@ module.exports = async (req, res) => {
         body += chunk;
       }
       
-      console.log('Raw body received, length:', body.length);
+      console.log('Raw body received from Creatium, length:', body.length);
 
       let data = {};
       if (body && body.trim() !== '') {
         try {
           data = JSON.parse(body);
-          console.log('✅ Successfully parsed JSON data');
+          console.log('✅ Successfully parsed Creatium JSON data');
         } catch (parseError) {
           console.error('❌ JSON parse error:', parseError);
-          throw new Error('Invalid JSON data received');
+          throw new Error('Invalid JSON data received from Creatium');
         }
       } else {
-        console.log('⚠️ Empty body received, using default data');
+        console.log('⚠️ Empty body received from Creatium, using default data');
       }
       
       console.log('Payment amount:', data.payment?.amount);
@@ -192,6 +242,7 @@ module.exports = async (req, res) => {
       };
 
       console.log('🚀 Sending to QR service...');
+      console.log('QR payload:', JSON.stringify(payload, null, 2));
 
       const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
         method: "POST",
@@ -202,6 +253,8 @@ module.exports = async (req, res) => {
         body: JSON.stringify(payload)
       });
 
+      console.log(`📡 QR API Response: ${qrResponse.status} ${qrResponse.statusText}`);
+
       if (!qrResponse.ok) {
         const errorText = await qrResponse.text();
         console.error('❌ QR service error:', qrResponse.status, errorText);
@@ -210,24 +263,20 @@ module.exports = async (req, res) => {
 
       const qrResult = await qrResponse.json();
       console.log('✅ QR generated successfully');
-      console.log('QR response:', JSON.stringify(qrResult, null, 2));
+      console.log('🔍 QR response structure:', JSON.stringify(qrResult, null, 2));
 
-      // 🔥 ПОЛУЧАЕМ OPERATION_ID ИЗ ОТВЕТА
+      // 🔥 ПОЛУЧАЕМ OPERATION_ID ИЗ ОТВЕТА (из логов видно что он в results.operation_id)
       let operationId = null;
       
       if (qrResult.results && qrResult.results.operation_id) {
         operationId = qrResult.results.operation_id;
-      } else if (qrResult.operation_id) {
-        operationId = qrResult.operation_id;
-      } else if (qrResult.id) {
-        operationId = qrResult.id;
+        console.log('🎯 Found operation_id in results.operation_id:', operationId);
       } else {
-        // Если нет operation_id, создаем свой на основе paymentId
         operationId = paymentId;
-        console.log('⚠️ No operation_id in response, using paymentId:', operationId);
+        console.log('⚠️ No operation_id found, using paymentId:', operationId);
       }
 
-      console.log('🎯 Operation ID for status checking:', operationId);
+      console.log('🎯 Final Operation ID for status checking:', operationId);
 
       // Проверяем что QR-код сгенерирован
       if (!qrResult.results || !qrResult.results.qr_img) {
@@ -235,7 +284,7 @@ module.exports = async (req, res) => {
         throw new Error('QR code generation failed');
       }
 
-      // 🔥 СОЗДАЕМ HTML ФОРМУ БЕЗ АВТО-РЕДИРЕКТА
+      // 🔥 СОЗДАЕМ HTML ФОРМУ
       const htmlForm = `
 <!DOCTYPE html>
 <html>
@@ -304,11 +353,6 @@ module.exports = async (req, res) => {
             color: #856404;
             border: 1px solid #ffeaa7;
         }
-        .status-error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
         .checking-status {
             background: #e3f2fd;
             color: #1976d2;
@@ -347,14 +391,6 @@ module.exports = async (req, res) => {
             color: #6c757d;
             text-align: left;
         }
-        .warning {
-            background: #fff3cd;
-            color: #856404;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            border: 1px solid #ffeaa7;
-        }
     </style>
 </head>
 <body>
@@ -363,7 +399,7 @@ module.exports = async (req, res) => {
         
         <div class="order-info">
             <strong>Заказ #${orderId}</strong><br>
-            <small>ID операции: ${operationId}</small>
+            <small>Operation ID: ${operationId}</small>
         </div>
         
         <div class="amount">${amountInRub} руб.</div>
@@ -374,93 +410,55 @@ module.exports = async (req, res) => {
             <strong>Автоматическая проверка статуса оплаты</strong><br>
             • Отсканируйте QR-код и оплатите<br>
             • Система проверит статус автоматически<br>
-            • <strong>Авто-возврат ТОЛЬКО при успешной оплате</strong>
-        </div>
-
-        <div class="warning">
-            ⚠️ <strong>Внимание:</strong> Авто-возврат произойдет только после реального платежа!
-        </div>
-
-        <!-- Отладочная информация -->
-        <div class="debug-info">
-            <strong>Отладка:</strong><br>
-            Operation ID: ${operationId}<br>
-            Order ID: ${orderId}<br>
-            Сумма: ${amountInRub} руб.<br>
-            <strong>Только статус 5 = "Оплачено"</strong>
+            • <strong>Авто-возврат ТОЛЬКО при статусе "5"</strong>
         </div>
 
         <!-- Статус проверки -->
         <div id="checkingStatus" class="checking-status">
-            🔍 Начинаем проверку статуса через 10 секунд...
+            🔍 Первая проверка через 10 секунд...
         </div>
 
         <!-- Сообщения о статусе -->
         <div id="successMessage" class="status-message status-success" style="display: none;">
-            ✅ <strong>Оплата прошла успешно!</strong><br>
+            ✅ <strong>ОПЛАЧЕНО! Статус: 5</strong><br>
             <div id="countdown" class="checking-status" style="margin: 10px 0;">
-                Авто-возврат через: <span id="timer">10</span> сек
+                Авто-возврат через: <span id="timer">5</span> сек
             </div>
-            <small>Статус: <span id="statusDetail">Оплачено</span></small>
         </div>
 
         <div id="pendingMessage" class="status-message status-pending" style="display: none;">
-            ⏳ <strong>Ожидание оплаты...</strong><br>
-            <small>Статус: <span id="pendingDetail">Не оплачено</span></small>
+            ⏳ <strong>ОЖИДАНИЕ ОПЛАТЫ</strong><br>
+            <small>Текущий статус: <span id="statusInfo">проверяем...</span></small>
         </div>
 
-        <div id="errorMessage" class="status-message status-error" style="display: none;">
-            ❌ <strong>Ошибка проверки</strong><br>
-            <small id="errorDetail">Не удалось проверить статус</small>
+        <!-- Отладочная информация -->
+        <div class="debug-info">
+            <strong>Информация для отладки:</strong><br>
+            • Operation ID: <code>${operationId}</code><br>
+            • Order ID: ${orderId}<br>
+            • Сумма: ${amountInRub} руб.<br>
+            • <strong>Требуется статус: 5 (Оплачено)</strong>
         </div>
 
         <!-- Кнопки управления -->
         <div style="margin-top: 20px;">
-            <button id="checkStatusBtn" class="button button-check">🔄 Проверить статус сейчас</button>
+            <button id="checkStatusBtn" class="button button-check">🔄 Проверить статус</button>
             <a href="${successUrl}" id="manualSuccessBtn" class="button button-success">✅ Я оплатил (вручную)</a>
-            <a href="${failUrl}" class="button button-cancel">❌ Отмена оплаты</a>
-        </div>
-
-        <div style="color: #666; margin-top: 20px; font-size: 14px; line-height: 1.4;">
-            <strong>Как работает:</strong><br>
-            • Проверка каждые 15 секунд<br>
-            • Авто-возврат ТОЛЬКО при статусе "5"<br>
-            • Все остальные статусы = не оплачено
+            <a href="${failUrl}" class="button button-cancel">❌ Отмена</a>
         </div>
     </div>
 
     <script>
         const operationId = '${operationId}';
-        const orderId = '${orderId}';
         const successUrl = '${successUrl}';
         
         let checkInterval;
-        let isChecking = false;
         let paidStatus = false;
-
-        // Элементы DOM
-        const checkingStatus = document.getElementById('checkingStatus');
-        const successMessage = document.getElementById('successMessage');
-        const pendingMessage = document.getElementById('pendingMessage');
-        const errorMessage = document.getElementById('errorMessage');
-        const countdown = document.getElementById('countdown');
-        const timer = document.getElementById('timer');
-        const statusDetail = document.getElementById('statusDetail');
-        const pendingDetail = document.getElementById('pendingDetail');
-        const errorDetail = document.getElementById('errorDetail');
-        const checkStatusBtn = document.getElementById('checkStatusBtn');
-        const manualSuccessBtn = document.getElementById('manualSuccessBtn');
 
         // Функция проверки статуса платежа
         async function checkPaymentStatus() {
-            if (isChecking || paidStatus) return;
-            
-            isChecking = true;
             try {
-                checkingStatus.style.display = 'block';
-                checkingStatus.textContent = '🔍 Проверяем статус платежа...';
-                
-                const response = await fetch('/api/check-status/', {
+                const response = await fetch('/api/check-status', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -473,38 +471,29 @@ module.exports = async (req, res) => {
                 const result = await response.json();
                 console.log('Status check result:', result);
                 
-                checkingStatus.style.display = 'none';
-                
                 if (result.success && result.status === 'paid') {
-                    // 🔥 ПЛАТЕЖ УСПЕШЕН - ТОЛЬКО КОГДА СТАТУС 5
+                    // 🔥 ПЛАТЕЖ УСПЕШЕН
                     paidStatus = true;
-                    showSuccess(result.message, result.data);
+                    showSuccess();
                 } else {
-                    // 🔥 НЕ ОПЛАЧЕНО - ЛЮБОЙ ДРУГОЙ СТАТУС
-                    showPending(result.message, result.data);
+                    // 🔥 НЕ ОПЛАЧЕНО
+                    const statusCode = result.data?.results?.operation_status_code;
+                    const statusMsg = result.data?.results?.operation_status_msg;
+                    showPending(statusCode, statusMsg);
                 }
                 
             } catch (error) {
                 console.error('Status check failed:', error);
-                checkingStatus.style.display = 'none';
-                showError('Ошибка проверки статуса: ' + error.message);
-            } finally {
-                isChecking = false;
+                showPending('error', 'Ошибка проверки');
             }
         }
 
         // Показать успешный статус
-        function showSuccess(message, data) {
-            successMessage.style.display = 'block';
-            pendingMessage.style.display = 'none';
-            errorMessage.style.display = 'none';
-            checkStatusBtn.style.display = 'none';
-            manualSuccessBtn.style.display = 'none';
-            
-            const statusCode = data?.results?.operation_status_code;
-            const statusMsg = data?.results?.operation_status_msg;
-            
-            statusDetail.textContent = statusMsg || message || 'Оплачено';
+        function showSuccess() {
+            document.getElementById('successMessage').style.display = 'block';
+            document.getElementById('pendingMessage').style.display = 'none';
+            document.getElementById('checkStatusBtn').style.display = 'none';
+            document.getElementById('manualSuccessBtn').style.display = 'none';
             
             // Остановить проверку
             if (checkInterval) {
@@ -515,37 +504,22 @@ module.exports = async (req, res) => {
             startAutoRedirect();
         }
 
-        // Показать ожидание (не оплачено)
-        function showPending(message, data) {
-            successMessage.style.display = 'none';
-            pendingMessage.style.display = 'block';
-            errorMessage.style.display = 'none';
-            
-            const statusCode = data?.results?.operation_status_code;
-            const statusMsg = data?.results?.operation_status_msg;
-            
-            pendingDetail.textContent = statusMsg || message || 'Не оплачено';
-            console.log('📊 Current status:', statusCode, '-', statusMsg);
-        }
-
-        // Показать ошибку
-        function showError(message) {
-            successMessage.style.display = 'none';
-            pendingMessage.style.display = 'none';
-            errorMessage.style.display = 'block';
-            errorDetail.textContent = message;
+        // Показать ожидание
+        function showPending(statusCode, statusMsg) {
+            document.getElementById('successMessage').style.display = 'none';
+            document.getElementById('pendingMessage').style.display = 'block';
+            document.getElementById('statusInfo').textContent = `код ${statusCode} - ${statusMsg || 'не оплачено'}`;
         }
 
         // Автоматическое перенаправление
         function startAutoRedirect() {
-            let seconds = 10;
+            let seconds = 5;
             const countdownInterval = setInterval(() => {
                 seconds--;
-                timer.textContent = seconds;
+                document.getElementById('timer').textContent = seconds;
                 
                 if (seconds <= 0) {
                     clearInterval(countdownInterval);
-                    console.log('🔄 Auto-redirect to success page');
                     window.location.href = successUrl;
                 }
             }, 1000);
@@ -562,30 +536,12 @@ module.exports = async (req, res) => {
         }
 
         // Ручная проверка по кнопке
-        checkStatusBtn.addEventListener('click', checkPaymentStatus);
-
-        // Подтверждение для ручного перехода
-        manualSuccessBtn.addEventListener('click', function(e) {
-            if (!paidStatus) {
-                const confirmed = confirm('ВЫ УВЕРЕНЫ, ЧТО ОПЛАТИЛИ ЗАКАЗ?\n\nНажимайте OK только если:\n• Деньги списаны с вашего счета\n• Вы получили подтверждение оплаты\n\nНеправильное подтверждение приведет к ошибке статуса заказа!');
-                if (!confirmed) {
-                    e.preventDefault();
-                }
-            }
-        });
+        document.getElementById('checkStatusBtn').addEventListener('click', checkPaymentStatus);
 
         // Запуск при загрузке
-        console.log('🚀 Starting payment monitoring for operation:', operationId);
-        console.log('🔒 Auto-redirect will happen ONLY for status code 5');
+        console.log('Starting payment monitoring for operation:', operationId);
         startAutoCheck();
 
-        // Предупреждение при закрытии
-        window.addEventListener('beforeunload', function (e) {
-            if (!paidStatus) {
-                e.returnValue = 'Оплата не завершена. Вы уверены, что хотите уйти?';
-                return e.returnValue;
-            }
-        });
     </script>
 </body>
 </html>
@@ -668,7 +624,7 @@ module.exports = async (req, res) => {
       const qrResult = await qrResponse.json();
       
       // Получаем operation_id из ответа
-      let operationId = qrResult.results?.operation_id || qrResult.operation_id || qrResult.id || `test_${Date.now()}`;
+      let operationId = qrResult.results?.operation_id || `test_${Date.now()}`;
 
       const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id}&operation_id=${operationId}&status=success&paid=true`;
       const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${order_id}&status=failed&paid=false`;
@@ -710,33 +666,17 @@ module.exports = async (req, res) => {
             padding: 10px;
             background: white;
         }
-        .debug-info {
-            background: #f8f9fa;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            font-size: 12px;
-            color: #6c757d;
-            text-align: left;
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>💳 Тест оплаты</h2>
         <div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0; color: #1976d2;">
-            Заказ #${order_id}
+            Заказ #${order_id}<br>
+            <small>Operation ID: ${operationId}</small>
         </div>
         <div class="amount">${amountInRub} руб.</div>
         <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
-        
-        <div class="debug-info">
-            <strong>Тестовая информация:</strong><br>
-            Operation ID: ${operationId}<br>
-            Для проверки статуса используйте этот ID<br>
-            <strong>Только статус 5 = оплачено!</strong>
-        </div>
-        
         <div style="margin-top: 20px;">
             <a href="${successUrl}" style="background: #27ae60; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 5px;">
                 ✅ Тест успеха
