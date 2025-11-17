@@ -4,7 +4,6 @@ module.exports = async (req, res) => {
   console.log('=== CREATIUM QR PAYMENT HANDLER ===');
   console.log('Method:', req.method);
   console.log('URL:', req.url);
-  console.log('Headers:', req.headers);
 
   // Настраиваем CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -26,27 +25,27 @@ module.exports = async (req, res) => {
         body += chunk;
       }
       
-      console.log('Raw body received:', body);
+      console.log('Raw body received:', body.substring(0, 500) + '...');
 
       let data = {};
       if (body) {
         data = JSON.parse(body);
       }
       
-      console.log('Parsed Creatium data:', JSON.stringify(data, null, 2));
+      console.log('Parsed Creatium data:', JSON.stringify({
+        payment_amount: data.payment?.amount,
+        cart_subtotal: data.cart?.subtotal,
+        order_id: data.order?.id
+      }, null, 2));
 
       // Извлекаем сумму из данных Creatium
-      let amount = 100; // значение по умолчанию
-      
-      // Пробуем разные пути к сумме в данных Creatium
+      let amount = 100;
       if (data.payment && data.payment.amount) {
         amount = parseFloat(data.payment.amount);
       } else if (data.cart && data.cart.subtotal) {
         amount = data.cart.subtotal;
       } else if (data.amount) {
         amount = parseFloat(data.amount);
-      } else if (data.sum) {
-        amount = parseFloat(data.sum);
       }
 
       console.log('Final amount for QR:', amount);
@@ -59,7 +58,7 @@ module.exports = async (req, res) => {
         notification_url: "https://perevod-rus.ru/callback/"
       };
 
-      console.log('Sending to QR service with payload:', payload);
+      console.log('Sending to QR service...');
 
       const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
         method: "POST",
@@ -71,15 +70,13 @@ module.exports = async (req, res) => {
       });
 
       if (!qrResponse.ok) {
-        const errorText = await qrResponse.text();
-        console.error('QR service error:', qrResponse.status, errorText);
         throw new Error(`QR service error: ${qrResponse.status}`);
       }
 
       const qrResult = await qrResponse.json();
-      console.log('QR generated successfully:', qrResult.results ? 'Has results' : 'No results');
+      console.log('QR generated successfully');
 
-      // 🔥 ВАЖНО: Creatium ожидает ЧИСТЫЙ HTML, а не JSON!
+      // 🔥 ВАЖНО: Creatium ожидает JSON с полем "form" или "url"
       const htmlForm = `
 <!DOCTYPE html>
 <html>
@@ -235,19 +232,6 @@ module.exports = async (req, res) => {
     </div>
 
     <script>
-        // Автоматическая проверка размера экрана
-        function adjustQrSize() {
-            const screenWidth = window.innerWidth;
-            const qrContainer = document.querySelector('.qr-code-container');
-            if (screenWidth < 400) {
-                qrContainer.style.padding = '10px';
-            }
-        }
-
-        // Проверяем при загрузке и при изменении размера окна
-        window.addEventListener('load', adjustQrSize);
-        window.addEventListener('resize', adjustQrSize);
-
         console.log('QR payment page loaded successfully');
         console.log('Amount:', ${amount});
     </script>
@@ -255,15 +239,22 @@ module.exports = async (req, res) => {
 </html>
       `;
 
-      // 🔥 КРИТИЧЕСКИ ВАЖНО: Возвращаем чистый HTML, а не JSON!
-      console.log('Returning HTML form to Creatium');
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.status(200).send(htmlForm);
+      // 🔥 КРИТИЧЕСКИ ВАЖНО: Возвращаем JSON с полем "form"
+      console.log('Returning JSON with form to Creatium');
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      
+      return res.status(200).json({
+        success: true,
+        form: htmlForm,
+        amount: amount,
+        order_id: data.order?.id,
+        payment_id: data.payment?.id
+      });
 
     } catch (error) {
       console.error('Error processing payment:', error);
       
-      // Возвращаем HTML с ошибкой
+      // Возвращаем JSON с ошибкой
       const errorHtml = `
 <!DOCTYPE html>
 <html>
@@ -288,16 +279,6 @@ module.exports = async (req, res) => {
             color: #dc3545; 
             margin-bottom: 20px;
         }
-        .retry-button {
-            background: #dc3545;
-            color: white;
-            padding: 12px 25px;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            cursor: pointer;
-            margin-top: 20px;
-        }
     </style>
 </head>
 <body>
@@ -305,15 +286,18 @@ module.exports = async (req, res) => {
         <h2>❌ Ошибка при обработке оплаты</h2>
         <p style="color: #666; margin: 20px 0;">${error.message}</p>
         <p style="color: #888;">Пожалуйста, попробуйте повторить оплату позже</p>
-        <button class="retry-button" onclick="window.location.reload()">Повторить попытку</button>
     </div>
 </body>
 </html>
       `;
       
-      console.log('Returning error HTML to Creatium');
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.status(200).send(errorHtml);
+      console.log('Returning error JSON to Creatium');
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      return res.status(200).json({
+        success: false,
+        form: errorHtml,
+        error: error.message
+      });
     }
   }
 
@@ -380,21 +364,11 @@ module.exports = async (req, res) => {
             padding: 10px;
             background: white;
         }
-        .test-info {
-            background: #e3f2fd;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 20px 0;
-            color: #1976d2;
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>💳 Тестовая страница оплаты</h2>
-        <div class="test-info">
-            Это тестовая страница. Для работы с Creatium используйте POST запросы.
-        </div>
         <div class="amount">${sum} руб.</div>
         <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
         <div style="margin-top: 20px; color: #666;">
