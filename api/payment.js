@@ -1,110 +1,58 @@
 // 🔐 БЕЗОПАСНОЕ ИСПОЛЬЗОВАНИЕ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ
 const API_KEY = process.env.QR_API_KEY;
 
-// 🔥 УЛУЧШЕННАЯ ФУНКЦИЯ ДЛЯ ПРОВЕРКИ СТАТУСА ПЛАТЕЖА
+// 🔥 ФУНКЦИЯ ДЛЯ ПРОВЕРКИ СТАТУСА ПЛАТЕЖА
 async function checkPaymentStatus(operationId) {
   try {
     console.log(`🔍 Checking payment status for operation: ${operationId}`);
     
-    // 🔥 ПРОВЕРЯЕМ РАЗНЫЕ ВАРИАНТЫ ENDPOINT'ОВ
-    const endpoints = [
-      `https://app.wapiserv.qrm.ooo/operations/${operationId}/qr-status/`,
-      `https://app.wapiserv.qrm.ooo/operations/${operationId}/status/`,
-      `https://app.wapiserv.qrm.ooo/operations/${operationId}/`
-    ];
-    
-    let statusResponse = null;
-    let lastError = null;
-    
-    // Пробуем разные endpoint'ы
-    for (const endpoint of endpoints) {
-      try {
-        console.log(`Trying endpoint: ${endpoint}`);
-        statusResponse = await fetch(endpoint, {
-          method: "GET",
-          headers: {
-            "accept": "application/json",
-            "X-Api-Key": API_KEY
-          }
-        });
-        
-        if (statusResponse.ok) {
-          console.log(`✅ Success with endpoint: ${endpoint}`);
-          break;
-        } else {
-          console.log(`❌ Endpoint failed: ${endpoint} - ${statusResponse.status}`);
-          lastError = `Endpoint ${endpoint} failed: ${statusResponse.status}`;
-        }
-      } catch (endpointError) {
-        console.log(`❌ Endpoint error: ${endpoint} - ${endpointError.message}`);
-        lastError = endpointError.message;
+    const statusResponse = await fetch(`https://app.wapiserv.qrm.ooo/operations/${operationId}/qr-status/`, {
+      method: "GET",
+      headers: {
+        "accept": "application/json",
+        "X-Api-Key": API_KEY
       }
-    }
-    
-    if (!statusResponse || !statusResponse.ok) {
-      console.error(`All endpoints failed. Last error: ${lastError}`);
-      return { 
-        success: false, 
-        status: 'api_error',
-        error: `All API endpoints failed: ${lastError}`
-      };
-    }
+    });
 
     console.log(`📊 Status API Response: ${statusResponse.status} ${statusResponse.statusText}`);
     
-    const statusData = await statusResponse.json();
-    console.log('💳 Payment status API response:', JSON.stringify(statusData, null, 2));
-    
-    // 🔥 РАСШИРЕННЫЙ АНАЛИЗ СТАТУСА
-    let statusCode = null;
-    let statusMsg = null;
-    
-    // Ищем статус в разных местах ответа
-    if (statusData.results) {
-      statusCode = statusData.results.operation_status_code || statusData.results.status_code;
-      statusMsg = statusData.results.operation_status_msg || statusData.results.status_msg;
-    } else if (statusData.operation_status_code) {
-      statusCode = statusData.operation_status_code;
-      statusMsg = statusData.operation_status_msg;
-    } else if (statusData.status) {
-      statusCode = statusData.status;
-      statusMsg = statusData.message;
-    }
-    
-    console.log(`📋 Status Code: ${statusCode}, Message: "${statusMsg}"`);
-    console.log(`🔍 Full status data:`, JSON.stringify(statusData, null, 2));
-    
-    // 🔥 РАСШИРЕННАЯ ПРОВЕРКА СТАТУСОВ
-    const successStatuses = [5, '5', 'success', 'paid', 'completed', 'SUCCESS', 'PAID'];
-    const pendingStatuses = [3, '3', 'created', 'pending', 'waiting', 'CREATED', 'PENDING'];
-    
-    if (successStatuses.includes(statusCode)) {
-      console.log('🎉 PAYMENT SUCCESSFUL! Status code indicates payment received');
-      return { 
-        success: true, 
-        status: 'paid',
-        statusCode: statusCode,
-        message: statusMsg || 'Payment successful',
-        data: statusData 
-      };
-    } else if (pendingStatuses.includes(statusCode)) {
-      console.log(`⏳ PAYMENT PENDING - Status code: ${statusCode}, Message: "${statusMsg}"`);
-      return { 
-        success: false, 
-        status: 'pending',
-        statusCode: statusCode,
-        message: statusMsg || 'Payment pending',
-        data: statusData 
-      };
+    if (statusResponse.ok) {
+      const statusData = await statusResponse.json();
+      console.log('💳 Payment status API response:', JSON.stringify(statusData, null, 2));
+      
+      // 🔥 АНАЛИЗИРУЕМ СТАТУС ОПЕРАЦИИ
+      const statusCode = statusData.results?.operation_status_code;
+      const statusMsg = statusData.results?.operation_status_msg;
+      
+      console.log(`📋 Status Code: ${statusCode}, Message: "${statusMsg}"`);
+      
+      // 🔥 ВАЖНО: ТОЛЬКО КОД 5 - ОПЛАЧЕНО, ВСЕ ОСТАЛЬНОЕ - НЕ ОПЛАЧЕНО
+      if (statusCode === 5) {
+        console.log('🎉 PAYMENT SUCCESSFUL - Status code 5 detected!');
+        return { 
+          success: true, 
+          status: 'paid',
+          message: statusMsg,
+          data: statusData 
+        };
+      } else {
+        // 🔥 ВСЕ ДРУГИЕ КОДЫ - НЕ ОПЛАЧЕНО
+        console.log(`❌ PAYMENT NOT DONE - Status code: ${statusCode}, Message: "${statusMsg}"`);
+        return { 
+          success: false, 
+          status: 'not_paid',
+          message: statusMsg || `Status: ${statusCode}`,
+          data: statusData 
+        };
+      }
     } else {
-      // 🔥 ВСЕ ДРУГИЕ КОДЫ - НЕ ОПЛАЧЕНО ИЛИ ОШИБКА
-      console.log(`❌ PAYMENT NOT DONE or ERROR - Status code: ${statusCode}, Message: "${statusMsg}"`);
+      const errorText = await statusResponse.text();
+      console.error(`❌ Status check failed: ${statusResponse.status}`, errorText);
       return { 
         success: false, 
-        status: 'not_paid',
-        statusCode: statusCode,
-        message: statusMsg || `Status: ${statusCode}`,
-        data: statusData 
+        status: 'api_error',
+        error: `API error: ${statusResponse.status}`,
+        details: errorText
       };
     }
     
@@ -115,47 +63,6 @@ async function checkPaymentStatus(operationId) {
       status: 'error',
       error: error.message 
     };
-  }
-}
-
-// 🔥 ФУНКЦИЯ ДЛЯ ПРОВЕРКИ СТАТУСА ЧЕРЕЗ СПИСОК ОПЕРАЦИЙ
-async function checkPaymentStatusViaList(operationId) {
-  try {
-    console.log(`🔍 Trying to find operation in list: ${operationId}`);
-    
-    const listResponse = await fetch(`https://app.wapiserv.qrm.ooo/operations/?search=${operationId}`, {
-      method: "GET",
-      headers: {
-        "accept": "application/json",
-        "X-Api-Key": API_KEY
-      }
-    });
-    
-    if (listResponse.ok) {
-      const listData = await listResponse.json();
-      console.log('📋 Operations list response:', JSON.stringify(listData, null, 2));
-      
-      if (listData.results && listData.results.length > 0) {
-        const operation = listData.results.find(op => 
-          op.operation_id === operationId || op.id === operationId
-        );
-        
-        if (operation) {
-          console.log('🎯 Found operation in list:', operation);
-          return {
-            success: true,
-            status: 'found_in_list',
-            data: operation,
-            fromList: true
-          };
-        }
-      }
-    }
-    
-    return { success: false, status: 'not_found_in_list' };
-  } catch (error) {
-    console.error('Error checking via list:', error);
-    return { success: false, status: 'list_error', error: error.message };
   }
 }
 
@@ -238,12 +145,7 @@ module.exports = async (req, res) => {
       
       console.log(`📊 Callback processed - Operation: ${operationId}, Status: ${status}`);
       
-      // Сохраняем callback данные для отладки
-      if (operationId) {
-        console.log(`💾 Saving callback for operation ${operationId}:`, callbackData);
-      }
-      
-      return res.status(200).json({ success: true, message: 'Callback received', data: callbackData });
+      return res.status(200).json({ success: true, message: 'Callback received' });
       
     } catch (error) {
       console.error('💥 Callback error:', error);
@@ -266,37 +168,8 @@ module.exports = async (req, res) => {
         return res.status(400).json({ success: false, error: 'Operation ID required' });
       }
       
-      // 🔥 ПРОВЕРЯЕМ СТАТУС РАЗНЫМИ СПОСОБАМИ
-      console.log(`🔄 Starting comprehensive status check for: ${operationId}`);
-      
-      // 1. Основная проверка статуса
       const statusResult = await checkPaymentStatus(operationId);
-      console.log(`📊 Main status check result:`, statusResult);
-      
-      // 2. Если не нашли, проверяем через список операций
-      if (!statusResult.success && statusResult.status !== 'paid') {
-        console.log(`🔄 Trying alternative check via operations list...`);
-        const listResult = await checkPaymentStatusViaList(operationId);
-        
-        if (listResult.success && listResult.fromList) {
-          console.log(`✅ Found operation in list:`, listResult.data);
-          // Анализируем данные из списка
-          const operationData = listResult.data;
-          const operationStatus = operationData.status || operationData.operation_status;
-          
-          if (operationStatus === 'success' || operationStatus === 'paid' || operationStatus === 5) {
-            return res.status(200).json({
-              success: true,
-              status: 'paid',
-              message: 'Payment found in operations list',
-              data: operationData,
-              fromList: true
-            });
-          }
-        }
-      }
-      
-      console.log(`📋 Final status check result for ${operationId}:`, statusResult);
+      console.log(`📋 Status check result for ${operationId}:`, statusResult);
       return res.status(200).json(statusResult);
       
     } catch (error) {
@@ -410,7 +283,7 @@ module.exports = async (req, res) => {
         throw new Error('QR code generation failed');
       }
 
-      // 🔥 УЛУЧШЕННЫЙ HTML С ДИАГНОСТИКОЙ
+      // 🔥 СОЗДАЕМ HTML ФОРМУ
       const htmlForm = `
 <!DOCTYPE html>
 <html>
@@ -421,7 +294,7 @@ module.exports = async (req, res) => {
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 700px;
+            max-width: 600px;
             margin: 0 auto;
             padding: 20px;
             background: #f5f5f5;
@@ -479,11 +352,6 @@ module.exports = async (req, res) => {
             color: #856404;
             border: 1px solid #ffeaa7;
         }
-        .status-error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
         .checking-status {
             background: #e3f2fd;
             color: #1976d2;
@@ -529,18 +397,11 @@ module.exports = async (req, res) => {
             padding: 10px;
             border-radius: 5px;
             margin: 10px 0;
-            font-family: 'Courier New', monospace;
+            font-family: monospace;
             font-size: 11px;
             text-align: left;
             max-height: 200px;
             overflow-y: auto;
-        }
-        .status-codes {
-            background: #e8f5e8;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-            text-align: left;
         }
     </style>
 </head>
@@ -550,8 +411,7 @@ module.exports = async (req, res) => {
         
         <div class="order-info">
             <strong>Заказ #${orderId}</strong><br>
-            <small>ID операции: ${operationId}</small><br>
-            <small>Payment ID: ${paymentId}</small>
+            <small>ID операции: ${operationId}</small>
         </div>
         
         <div class="amount">${amountInRub} руб.</div>
@@ -562,26 +422,16 @@ module.exports = async (req, res) => {
             <strong>Автоматическая проверка статуса оплаты</strong><br>
             • Отсканируйте QR-код и оплатите<br>
             • Система проверит статус автоматически<br>
-            • <strong>Авто-возврат ТОЛЬКО при статусе "5" (Оплачено)</strong>
-        </div>
-
-        <!-- Информация о статусах -->
-        <div class="status-codes">
-            <strong>Коды статусов:</strong><br>
-            • <strong>3</strong> - Создан (ожидание оплаты)<br>
-            • <strong>5</strong> - Оплачено (успех)<br>
-            • <strong>Другие</strong> - Ошибка или отмена
+            • <strong>Авто-возврат ТОЛЬКО при статусе "5"</strong>
         </div>
 
         <!-- Логи в реальном времени -->
         <div class="debug-info">
             <strong>Логи проверки статуса:</strong>
             <div id="logContainer" class="log-container">
-> 🚀 Запуск мониторинга платежа...
-> 🎯 Operation ID: ${operationId}
-> 💳 Payment ID: ${paymentId}
-> 📦 Order ID: ${orderId}
-> ⏰ Проверка каждые 10 секунд
+                > Начинаем мониторинг оплаты...\n
+                > Operation ID: ${operationId}\n
+                > Проверка каждые 10 секунд\n
             </div>
         </div>
 
@@ -603,58 +453,43 @@ module.exports = async (req, res) => {
             <small>Текущий статус: <span id="statusInfo">проверяем...</span></small>
         </div>
 
-        <div id="errorMessage" class="status-message status-error" style="display: none;">
-            ❌ <strong>ОШИБКА ПРОВЕРКИ</strong><br>
-            <small id="errorInfo">Произошла ошибка</small>
-        </div>
-
         <!-- Отладочная информация -->
         <div class="debug-info">
             <strong>Информация для отладки:</strong><br>
             • Operation ID: <code>${operationId}</code><br>
-            • Payment ID: ${paymentId}<br>
             • Order ID: ${orderId}<br>
             • Сумма: ${amountInRub} руб.<br>
             • <strong>Требуется статус: 5 (Оплачено)</strong><br>
-            • <strong>Проверки: <span id="checkCount">0</span></strong><br>
-            • Последний статус: <span id="lastStatus">не проверен</span>
+            • <strong>Проверки: <span id="checkCount">0</span></strong>
         </div>
 
         <!-- Кнопки управления -->
         <div style="margin-top: 20px;">
             <button id="checkStatusBtn" class="button button-check">🔄 Проверить статус сейчас</button>
-            <button id="forceSuccessBtn" class="button button-success">✅ Тест успешной оплаты</button>
-            <a href="${successUrl}" id="manualSuccessBtn" class="button button-success">📱 Я оплатил (вручную)</a>
+            <a href="${successUrl}" id="manualSuccessBtn" class="button button-success">✅ Я оплатил (вручную)</a>
             <a href="${failUrl}" class="button button-cancel">❌ Отмена</a>
         </div>
     </div>
 
     <script>
         const operationId = '${operationId}';
-        const paymentId = '${paymentId}';
-        const orderId = '${orderId}';
         const successUrl = '${successUrl}';
         
         let checkInterval;
         let paidStatus = false;
         let checkCount = 0;
-        let lastStatus = 'не проверен';
 
         // Элементы DOM
         const checkingStatus = document.getElementById('checkingStatus');
         const successMessage = document.getElementById('successMessage');
         const pendingMessage = document.getElementById('pendingMessage');
-        const errorMessage = document.getElementById('errorMessage');
         const countdown = document.getElementById('countdown');
         const timer = document.getElementById('timer');
         const statusInfo = document.getElementById('statusInfo');
-        const errorInfo = document.getElementById('errorInfo');
         const checkStatusBtn = document.getElementById('checkStatusBtn');
-        const forceSuccessBtn = document.getElementById('forceSuccessBtn');
         const manualSuccessBtn = document.getElementById('manualSuccessBtn');
         const logContainer = document.getElementById('logContainer');
         const checkCountElement = document.getElementById('checkCount');
-        const lastStatusElement = document.getElementById('lastStatus');
 
         // Функция для добавления логов
         function addLog(message) {
@@ -685,12 +520,7 @@ module.exports = async (req, res) => {
                 });
                 
                 const result = await response.json();
-                
-                // Обновляем последний статус
-                lastStatus = result.statusCode || result.status || 'unknown';
-                lastStatusElement.textContent = lastStatus + (result.message ? ' - ' + result.message : '');
-                
-                addLog('📊 Ответ API: статус ' + result.status + ', код: ' + lastStatus);
+                addLog('Ответ API: статус ' + result.status + ', код: ' + (result.data?.results?.operation_status_code || 'unknown'));
                 console.log('Status check result:', result);
                 
                 checkingStatus.style.display = 'none';
@@ -700,21 +530,19 @@ module.exports = async (req, res) => {
                     paidStatus = true;
                     addLog('🎉 ОПЛАЧЕНО! Статус 5 обнаружен!');
                     showSuccess(result.message, result.data);
-                } else if (result.status === 'pending') {
-                    // 🔥 ОЖИДАНИЕ ОПЛАТЫ
-                    addLog('⏳ Ожидание оплаты. Код: ' + lastStatus);
-                    showPending(lastStatus, result.message);
                 } else {
-                    // 🔥 НЕ ОПЛАЧЕНО ИЛИ ОШИБКА
-                    addLog('❌ Не оплачено. Код: ' + lastStatus + ', Сообщение: "' + (result.message || 'не оплачено') + '"');
-                    showPending(lastStatus, result.message);
+                    // 🔥 НЕ ОПЛАЧЕНО
+                    const statusCode = result.data?.results?.operation_status_code;
+                    const statusMsg = result.data?.results?.operation_status_msg;
+                    addLog('❌ Не оплачено. Код: ' + statusCode + ', Сообщение: "' + (statusMsg || 'не оплачено') + '"');
+                    showPending(statusCode, statusMsg);
                 }
                 
             } catch (error) {
                 console.error('Status check failed:', error);
-                addLog('💥 Ошибка проверки: ' + error.message);
+                addLog('❌ Ошибка проверки: ' + error.message);
                 checkingStatus.style.display = 'none';
-                showError('Ошибка проверки: ' + error.message);
+                showPending('error', 'Ошибка проверки');
             }
         }
 
@@ -722,9 +550,7 @@ module.exports = async (req, res) => {
         function showSuccess(message, data) {
             successMessage.style.display = 'block';
             pendingMessage.style.display = 'none';
-            errorMessage.style.display = 'none';
             checkStatusBtn.style.display = 'none';
-            forceSuccessBtn.style.display = 'none';
             manualSuccessBtn.style.display = 'none';
             
             const statusCode = data?.results?.operation_status_code;
@@ -746,16 +572,7 @@ module.exports = async (req, res) => {
         function showPending(statusCode, statusMsg) {
             successMessage.style.display = 'none';
             pendingMessage.style.display = 'block';
-            errorMessage.style.display = 'none';
             statusInfo.textContent = 'код ' + statusCode + ' - ' + (statusMsg || 'не оплачено');
-        }
-
-        // Показать ошибку
-        function showError(errorMsg) {
-            successMessage.style.display = 'none';
-            pendingMessage.style.display = 'none';
-            errorMessage.style.display = 'block';
-            errorInfo.textContent = errorMsg;
         }
 
         // Автоматическое перенаправление
@@ -787,16 +604,9 @@ module.exports = async (req, res) => {
         // Ручная проверка по кнопке
         checkStatusBtn.addEventListener('click', checkPaymentStatus);
 
-        // Тест успешной оплаты
-        forceSuccessBtn.addEventListener('click', function() {
-            addLog('🧪 ТЕСТ: Имитация успешной оплаты');
-            showSuccess('Тестовый успех', { results: { operation_status_code: 5, operation_status_msg: 'Тест оплаты' } });
-        });
-
         // Запуск при загрузке
         addLog('🚀 Запуск мониторинга платежа...');
         addLog('🎯 Operation ID: ' + operationId);
-        addLog('💳 Payment ID: ' + paymentId);
         addLog('⏰ Проверка каждые 10 секунд');
         startAutoCheck();
 
@@ -847,9 +657,260 @@ module.exports = async (req, res) => {
     }
   }
 
-  // Остальной код GET обработчика остается таким же...
-  // [Здесь должен быть тот же GET обработчик что и в предыдущем коде]
-  
+  // 🔥 ОБРАБОТКА GET ЗАПРОСА ОТ CREATIUM (когда Creatium открывает страницу)
+  if (req.method === 'GET' && !req.url.includes('favicon') && !req.url.includes('.png')) {
+    try {
+      const urlParams = new URLSearchParams(req.url.split('?')[1]);
+      const sum = urlParams.get('sum');
+      const order_id = urlParams.get('order_id');
+      const operation_id = urlParams.get('operation_id');
+
+      console.log('GET request from Creatium:', { sum, order_id, operation_id });
+
+      // 🔥 ЕСЛИ ЕСТЬ ПАРАМЕТРЫ ОТ CREATIUM - ВОЗВРАЩАЕМ СТРАНИЦУ С QR-КОДОМ
+      if (sum && order_id && operation_id) {
+        console.log('Generating full payment page with QR code for Creatium');
+        
+        const amountInRub = parseFloat(sum);
+        const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id}&operation_id=${operation_id}&status=success&paid=true`;
+        const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${order_id}&status=failed&paid=false`;
+
+        // 🔥 ГЕНЕРИРУЕМ QR КОД ДЛЯ GET ЗАПРОСА
+        const amountForQR = Math.round(amountInRub * 100);
+        const payload = {
+          sum: amountForQR,
+          qr_size: 400,
+          payment_purpose: "Оплата услуг перевода с иностранных языков",
+          notification_url: `https://creatium-qr.vercel.app/api/callback?order_id=${order_id}&operation_id=${operation_id}`
+        };
+
+        console.log('Generating QR code for GET request...');
+        const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Api-Key": API_KEY
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!qrResponse.ok) {
+          throw new Error(`QR service error: ${qrResponse.status}`);
+        }
+
+        const qrResult = await qrResponse.json();
+        console.log('QR generated for GET request');
+
+        // 🔥 ВОЗВРАЩАЕМ ПОЛНУЮ HTML СТРАНИЦУ С QR-КОДОМ
+        const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Оплата заказа #${order_id}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+        }
+        .amount {
+            font-size: 32px;
+            font-weight: bold;
+            color: #27ae60;
+            margin: 20px 0;
+        }
+        .qr-code {
+            max-width: 100%;
+            border: 2px solid #3498db;
+            border-radius: 10px;
+            padding: 10px;
+            background: white;
+        }
+        .instructions {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .order-info {
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            color: #856404;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💳 Оплата заказа</h1>
+        
+        <div class="order-info">
+            <strong>Заказ #${order_id}</strong><br>
+            <small>ID операции: ${operation_id}</small>
+        </div>
+        
+        <div class="amount">${amountInRub} руб.</div>
+        
+        <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
+        
+        <div class="instructions">
+            <strong>Автоматическая проверка статуса оплаты</strong><br>
+            • Отсканируйте QR-код и оплатите<br>
+            • Система проверит статус автоматически<br>
+            • <strong>Авто-возврат ТОЛЬКО при статусе "5"</strong>
+        </div>
+
+        <div style="margin-top: 20px;">
+            <a href="${successUrl}" class="button button-success" style="background: #27ae60; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 5px;">
+                ✅ Я оплатил (вручную)
+            </a>
+            <a href="${failUrl}" class="button button-cancel" style="background: #e74c3c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 5px;">
+                ❌ Отмена
+            </a>
+        </div>
+    </div>
+</body>
+</html>
+        `;
+
+        res.setHeader('Content-Type', 'text/html');
+        return res.status(200).send(html);
+      }
+
+      // Если это обычный GET запрос без параметров - генерируем тестовый QR
+      const amountInRub = parseFloat(sum || '100');
+      const amountForQR = Math.round(amountInRub * 100);
+
+      const payload = {
+        sum: amountForQR,
+        qr_size: 400,
+        payment_purpose: "Оплата услуг перевода с иностранных языков",
+        notification_url: 'https://creatium-qr.vercel.app/api/callback'
+      };
+
+      const qrResponse = await fetch("https://app.wapiserv.qrm.ooo/operations/qr-code/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Api-Key": API_KEY
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!qrResponse.ok) {
+        throw new Error(`QR service error: ${qrResponse.status}`);
+      }
+
+      const qrResult = await qrResponse.json();
+      
+      let operationId = qrResult.results?.operation_id || `test_${Date.now()}`;
+
+      const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id || 'test'}&operation_id=${operationId}&status=success&paid=true`;
+      const failUrl = `https://perevod-rus.ru/payment-failed?order_id=${order_id || 'test'}&status=failed&paid=false`;
+
+      const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Тест оплаты ${amountInRub} руб.</title>
+    <style>
+        body { 
+            font-family: Arial; 
+            text-align: center; 
+            padding: 50px; 
+            background: #f5f5f5; 
+        }
+        .container { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 15px; 
+            display: inline-block;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        h2 { 
+            color: #333; 
+            margin-bottom: 20px;
+        }
+        .amount { 
+            color: #27ae60; 
+            font-size: 28px; 
+            font-weight: bold; 
+            margin: 20px 0; 
+        }
+        .qr-code { 
+            max-width: 300px; 
+            border: 3px solid #3498db; 
+            border-radius: 10px; 
+            padding: 10px;
+            background: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>💳 Тест оплаты</h2>
+        <div style="background: #e3f2fd; padding: 10px; border-radius: 5px; margin: 10px 0; color: #1976d2;">
+            Заказ #${order_id || 'test'}<br>
+            <small>Operation ID: ${operationId}</small>
+        </div>
+        <div class="amount">${amountInRub} руб.</div>
+        <img src="${qrResult.results.qr_img}" alt="QR Code" class="qr-code">
+        <div style="margin-top: 20px;">
+            <a href="${successUrl}" style="background: #27ae60; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 5px;">
+                ✅ Тест успеха
+            </a>
+            <a href="${failUrl}" style="background: #e74c3c; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 5px;">
+                ❌ Тест отмены
+            </a>
+        </div>
+    </div>
+</body>
+</html>
+      `;
+
+      res.setHeader('Content-Type', 'text/html');
+      return res.status(200).send(html);
+
+    } catch (error) {
+      console.error('GET Error:', error);
+      
+      const errorHtml = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Ошибка</title></head>
+<body style="font-family: Arial; text-align: center; padding: 50px;">
+  <h2>❌ Ошибка</h2>
+  <p>${error.message}</p>
+  <a href="https://perevod-rus.ru" style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px;">
+    Вернуться на сайт
+  </a>
+</body>
+</html>
+      `;
+      
+      res.setHeader('Content-Type', 'text/html');
+      return res.status(200).send(errorHtml);
+    }
+  }
+
   // Если метод не поддерживается или путь не найден
   return res.status(404).json({
     error: 'Not found',
