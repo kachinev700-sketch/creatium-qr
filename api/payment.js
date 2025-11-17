@@ -1,12 +1,27 @@
 // 🔐 БЕЗОПАСНОЕ ИСПОЛЬЗОВАНИЕ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ
 const API_KEY = process.env.QR_API_KEY;
 
-// 🔥 РАСШИРЕННАЯ ФУНКЦИЯ ДЛЯ ПРОВЕРКИ СТАТУСА ПЛАТЕЖА
+// 🔥 ХРАНИЛИЩЕ ДЛЯ СООТВЕТСТВИЯ OPERATION_ID -> CALLBACK_ID
+const paymentMappings = new Map();
+
+// 🔥 ФУНКЦИЯ ДЛЯ ПРОВЕРКИ СТАТУСА ПЛАТЕЖА
 async function checkPaymentStatus(operationId) {
   try {
     console.log(`🔍 Comprehensive status check for operation: ${operationId}`);
     
-    // 🔥 ПРОБУЕМ РАЗНЫЕ ENDPOINT'Ы API
+    // 🔥 ПРОВЕРЯЕМ, ЕСТЬ ЛИ СООТВЕТСТВИЕ С CALLBACK ID
+    const callbackId = paymentMappings.get(operationId);
+    if (callbackId) {
+      console.log(`🎯 Found callback mapping: ${operationId} -> ${callbackId}`);
+      console.log(`🔄 Checking status via callback ID: ${callbackId}`);
+      
+      const callbackStatus = await checkStatusById(callbackId);
+      if (callbackStatus) {
+        return callbackStatus;
+      }
+    }
+    
+    // 🔥 ЕСЛИ НЕТ CALLBACK, ПРОВЕРЯЕМ ЧЕРЕЗ ОБЫЧНЫЕ ENDPOINT'Ы
     const endpoints = [
       {
         url: `https://app.wapiserv.qrm.ooo/operations/${operationId}/qr-status/`,
@@ -27,12 +42,11 @@ async function checkPaymentStatus(operationId) {
     ];
     
     let successfulResponse = null;
-    let lastError = null;
     
     // Пробуем все endpoint'ы по очереди
     for (const endpoint of endpoints) {
       try {
-        console.log(`🔄 Trying endpoint: ${endpoint.name} (${endpoint.url})`);
+        console.log(`🔄 Trying endpoint: ${endpoint.name}`);
         
         const response = await fetch(endpoint.url, {
           method: "GET",
@@ -46,38 +60,31 @@ async function checkPaymentStatus(operationId) {
         
         if (response.ok) {
           const data = await response.json();
-          console.log(`✅ ${endpoint.name} success:`, JSON.stringify(data, null, 2));
+          console.log(`✅ ${endpoint.name} success`);
           successfulResponse = { data, endpoint: endpoint.name };
-          break; // Используем первый успешный endpoint
-        } else {
-          console.log(`❌ ${endpoint.name} failed: ${response.status}`);
-          lastError = `${endpoint.name}: ${response.status}`;
+          break;
         }
       } catch (error) {
         console.log(`💥 ${endpoint.name} error: ${error.message}`);
-        lastError = error.message;
       }
     }
     
     if (!successfulResponse) {
-      console.error(`❌ All endpoints failed. Last error: ${lastError}`);
       return { 
         success: false, 
         status: 'api_error',
-        error: `All API endpoints failed: ${lastError}`
+        error: 'All API endpoints failed'
       };
     }
     
     const { data, endpoint } = successfulResponse;
-    console.log(`🎯 Using data from endpoint: ${endpoint}`);
     
-    // 🔥 АНАЛИЗИРУЕМ ДАННЫЕ ИЗ РАЗНЫХ ENDPOINT'ОВ
+    // 🔥 АНАЛИЗИРУЕМ ДАННЫЕ
     let statusCode = null;
     let statusMsg = null;
     let paymentData = null;
     
     if (endpoint === 'operations-search') {
-      // Обработка ответа из поиска по операциям
       if (data.results && data.results.length > 0) {
         const operation = data.results.find(op => 
           op.operation_id === operationId || op.id === operationId
@@ -89,26 +96,22 @@ async function checkPaymentStatus(operationId) {
         }
       }
     } else if (data.results) {
-      // Обработка стандартного ответа
       paymentData = data.results;
       statusCode = data.results.operation_status_code || data.results.status_code;
       statusMsg = data.results.operation_status_msg || data.results.status_msg;
     } else {
-      // Обработка прямого ответа
       paymentData = data;
       statusCode = data.operation_status_code || data.status_code || data.status;
       statusMsg = data.operation_status_msg || data.status_msg || data.message;
     }
     
-    console.log(`📋 Extracted - Status Code: ${statusCode}, Message: "${statusMsg}"`);
-    console.log(`🔍 Full payment data:`, JSON.stringify(paymentData, null, 2));
+    console.log(`📋 Status: ${statusCode}, Message: "${statusMsg}"`);
     
-    // 🔥 РАСШИРЕННАЯ ПРОВЕРКА СТАТУСОВ
-    const successStatuses = [5, '5', 'success', 'paid', 'completed', 'SUCCESS', 'PAID', 'COMPLETED'];
-    const pendingStatuses = [3, '3', 'created', 'pending', 'waiting', 'CREATED', 'PENDING', 'WAITING'];
+    // 🔥 ПРОВЕРКА СТАТУСОВ
+    const successStatuses = [5, '5', 'success', 'paid', 'completed'];
     
     if (successStatuses.includes(statusCode)) {
-      console.log('🎉 PAYMENT SUCCESSFUL! Payment confirmed');
+      console.log('🎉 PAYMENT SUCCESSFUL!');
       return { 
         success: true, 
         status: 'paid',
@@ -117,23 +120,13 @@ async function checkPaymentStatus(operationId) {
         data: paymentData,
         endpoint: endpoint
       };
-    } else if (pendingStatuses.includes(statusCode)) {
-      console.log(`⏳ PAYMENT PENDING - Status: ${statusCode}, Message: "${statusMsg}"`);
+    } else {
+      console.log(`❌ PAYMENT PENDING - Status: ${statusCode}`);
       return { 
         success: false, 
         status: 'pending',
         statusCode: statusCode,
         message: statusMsg || 'Payment pending',
-        data: paymentData,
-        endpoint: endpoint
-      };
-    } else {
-      console.log(`❌ PAYMENT NOT DONE or UNKNOWN - Status: ${statusCode}, Message: "${statusMsg}"`);
-      return { 
-        success: false, 
-        status: 'not_paid',
-        statusCode: statusCode,
-        message: statusMsg || `Status: ${statusCode}`,
         data: paymentData,
         endpoint: endpoint
       };
@@ -149,20 +142,62 @@ async function checkPaymentStatus(operationId) {
   }
 }
 
-// 🔥 ФУНКЦИЯ ДЛЯ ПРОВЕРКИ ЧЕРЕЗ WEBHOOK ИЛИ БАЗУ ДАННЫХ
-async function checkPaymentAlternative(operationId) {
+// 🔥 ФУНКЦИЯ ДЛЯ ПРОВЕРКИ ПО CALLBACK ID
+async function checkStatusById(callbackId) {
   try {
-    console.log(`🔍 Alternative check for: ${operationId}`);
+    console.log(`🔍 Checking via callback ID: ${callbackId}`);
     
-    // Здесь можно добавить проверку через:
-    // 1. Базу данных (если сохраняем статусы)
-    // 2. Другие API endpoints
-    // 3. Webhook данные
+    const endpoints = [
+      `https://app.wapiserv.qrm.ooo/operations/${callbackId}/qr-status/`,
+      `https://app.wapiserv.qrm.ooo/operations/${callbackId}/status/`,
+      `https://app.wapiserv.qrm.ooo/operations/${callbackId}/`
+    ];
     
-    // Пока возвращаем null - можно расширить при необходимости
+    for (const endpoint of endpoints) {
+      try {
+        const response = await fetch(endpoint, {
+          method: "GET",
+          headers: {
+            "accept": "application/json",
+            "X-Api-Key": API_KEY
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          console.log(`✅ Callback check success for ${callbackId}`);
+          
+          let statusCode = null;
+          let paymentData = null;
+          
+          if (data.results) {
+            paymentData = data.results;
+            statusCode = data.results.operation_status_code;
+          } else {
+            paymentData = data;
+            statusCode = data.operation_status_code;
+          }
+          
+          if (statusCode === 5) {
+            console.log('🎉 PAYMENT SUCCESSFUL via callback ID!');
+            return { 
+              success: true, 
+              status: 'paid',
+              statusCode: statusCode,
+              message: 'Payment successful via callback',
+              data: paymentData,
+              fromCallback: true
+            };
+          }
+        }
+      } catch (error) {
+        console.log(`Callback check error for ${endpoint}:`, error.message);
+      }
+    }
+    
     return null;
   } catch (error) {
-    console.error('Alternative check error:', error);
+    console.error('Error checking by callback ID:', error);
     return null;
   }
 }
@@ -172,7 +207,7 @@ module.exports = async (req, res) => {
   console.log('Method:', req.method);
   console.log('URL:', req.url);
 
-  // Игнорируем запросы к favicon и другим статическим файлам
+  // Игнорируем запросы к favicon
   if (req.url.includes('favicon') || req.url.includes('.png') || req.url.includes('.ico')) {
     return res.status(404).json({ error: 'Not found' });
   }
@@ -189,7 +224,7 @@ module.exports = async (req, res) => {
 
   // Проверяем что API ключ загружен
   if (!API_KEY) {
-    console.error('QR_API_KEY is not set in environment variables');
+    console.error('QR_API_KEY is not set');
     return res.status(500).json({ success: false, error: 'API key not configured' });
   }
 
@@ -207,25 +242,34 @@ module.exports = async (req, res) => {
       
       console.log('📨 Callback raw body:', body);
       
-      // Парсим callback данные
       let callbackData = {};
       if (body && body.trim() !== '') {
         try {
           callbackData = JSON.parse(body);
           console.log('✅ Callback data parsed:', JSON.stringify(callbackData, null, 2));
           
-          // 🔥 СОХРАНЯЕМ ДАННЫЕ CALLBACK ДЛЯ ОТЛАДКИ
-          const operationId = callbackData.operation_id || callbackData.id;
-          if (operationId) {
-            console.log(`💾 Callback for operation ${operationId}:`, callbackData);
+          // 🔥 ПОЛУЧАЕМ ID ИЗ CALLBACK И OPERATION_ID ИЗ URL
+          const callbackId = callbackData.id;
+          const urlParams = new URLSearchParams(req.url.split('?')[1]);
+          const operationId = urlParams.get('operation_id') || urlParams.get('order_id');
+          
+          if (callbackId && operationId) {
+            console.log(`💾 Saving payment mapping: ${operationId} -> ${callbackId}`);
+            paymentMappings.set(operationId, callbackId);
+            
+            // 🔥 ЕСЛИ СТАТУС 5 - СРАЗУ ОТМЕЧАЕМ КАК УСПЕШНЫЙ
+            if (callbackData.operation_status_code === 5) {
+              console.log('🎉 CALLBACK: Payment successful! Status 5 received');
+              // Можно также сохранить в базе данных или другом хранилище
+            }
           }
+          
         } catch (parseError) {
           console.error('❌ Callback JSON parse error:', parseError);
-          console.log('📨 Raw callback body:', body);
         }
       }
       
-      return res.status(200).json({ success: true, message: 'Callback received', data: callbackData });
+      return res.status(200).json({ success: true, message: 'Callback received' });
       
     } catch (error) {
       console.error('💥 Callback error:', error);
@@ -248,9 +292,9 @@ module.exports = async (req, res) => {
         return res.status(400).json({ success: false, error: 'Operation ID required' });
       }
       
-      // 🔥 ПРОВЕРЯЕМ СТАТУС РАСШИРЕННЫМ МЕТОДОМ
+      // 🔥 ПРОВЕРЯЕМ СТАТУС С УЧЕТОМ CALLBACK MAPPING
       const statusResult = await checkPaymentStatus(operationId);
-      console.log(`📋 Comprehensive status result:`, statusResult);
+      console.log(`📋 Status result:`, statusResult);
       
       return res.status(200).json(statusResult);
       
@@ -260,7 +304,7 @@ module.exports = async (req, res) => {
     }
   }
 
-  // 🔥 ОБРАБОТКА POST ОТ CREATIUM (ОСНОВНОЙ ENDPOINT)
+  // 🔥 ОБРАБОТКА POST ОТ CREATIUM
   if (req.method === 'POST' && !req.url.includes('/callback') && !req.url.includes('/check-status')) {
     try {
       let body = '';
@@ -276,7 +320,6 @@ module.exports = async (req, res) => {
           data = JSON.parse(body);
           console.log('✅ Parsed Creatium data');
         } catch (parseError) {
-          console.error('❌ JSON parse error:', parseError);
           throw new Error('Invalid JSON from Creatium');
         }
       }
@@ -294,7 +337,7 @@ module.exports = async (req, res) => {
         sum: amountForQR,
         qr_size: 400,
         payment_purpose: "Оплата услуг перевода с иностранных языков",
-        notification_url: `https://creatium-qr.vercel.app/api/callback?order_id=${orderId}&payment_id=${paymentId}`
+        notification_url: `https://creatium-qr.vercel.app/api/callback?order_id=${orderId}&operation_id=${paymentId}`
       };
 
       console.log('🚀 Generating QR code...');
@@ -317,7 +360,7 @@ module.exports = async (req, res) => {
       const operationId = qrResult.results?.operation_id || paymentId;
       console.log('🎯 Operation ID:', operationId);
 
-      // 🔥 СОЗДАЕМ УЛУЧШЕННУЮ СТРАНИЦУ С ДИАГНОСТИКОЙ
+      // 🔥 СОЗДАЕМ СТРАНИЦУ С УЧЕТОМ CALLBACK MAPPING
       const htmlForm = createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub, qrResult.results.qr_img, successUrl, failUrl);
       
       const response = {
@@ -355,7 +398,7 @@ module.exports = async (req, res) => {
       console.log('GET request:', { sum, order_id, operation_id });
 
       if (sum && order_id && operation_id) {
-        console.log('Generating enhanced payment page');
+        console.log('Generating payment page with callback support');
         
         const amountInRub = parseFloat(sum);
         const successUrl = `https://perevod-rus.ru/payment-success?order_id=${order_id}&operation_id=${operation_id}&status=success&paid=true`;
@@ -434,7 +477,7 @@ module.exports = async (req, res) => {
   return res.status(404).json({ error: 'Not found' });
 };
 
-// 🔥 УЛУЧШЕННАЯ ФУНКЦИЯ СОЗДАНИЯ СТРАНИЦЫ
+// 🔥 ФУНКЦИЯ СОЗДАНИЯ СТРАНИЦЫ
 function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub, qrImage, successUrl, failUrl) {
   return `
 <!DOCTYPE html>
@@ -454,16 +497,14 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
         .status-message { padding: 15px; border-radius: 8px; margin: 20px 0; }
         .status-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
         .status-pending { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
-        .status-warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        .status-callback { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
         .checking-status { background: #e3f2fd; color: #1976d2; padding: 10px; border-radius: 5px; margin: 10px 0; }
         .button { padding: 12px 24px; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; margin: 10px 5px; text-decoration: none; display: inline-block; }
         .button-success { background: #27ae60; color: white; }
         .button-check { background: #3498db; color: white; }
         .button-cancel { background: #e74c3c; color: white; }
-        .button-warning { background: #f39c12; color: white; }
         .debug-info { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; font-size: 12px; color: #6c757d; text-align: left; border: 1px dashed #dee2e6; }
         .log-container { background: #2c3e50; color: #ecf0f1; padding: 10px; border-radius: 5px; margin: 10px 0; font-family: monospace; font-size: 11px; text-align: left; max-height: 200px; overflow-y: auto; }
-        .status-codes { background: #e8f5e8; padding: 10px; border-radius: 5px; margin: 10px 0; text-align: left; }
     </style>
 </head>
 <body>
@@ -473,7 +514,7 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
         <div class="order-info">
             <strong>Operation ID:</strong> ${operationId}<br>
             <strong>Order ID:</strong> ${orderId}<br>
-            <strong>Payment ID:</strong> ${paymentId}
+            <small>Система автоматически отслеживает callback</small>
         </div>
         
         <div class="amount">${amountInRub} руб.</div>
@@ -481,28 +522,19 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
         <img src="${qrImage}" alt="QR Code" class="qr-code">
         
         <div class="instructions">
-            <strong>🚀 Улучшенная система проверки статуса</strong><br>
+            <strong>🚀 Умная система проверки статуса</strong><br>
             • Отсканируйте QR-код и оплатите<br>
-            • Система проверит статус через несколько endpoint'ов<br>
-            • <strong>Авто-возврат при статусе "5"</strong>
-        </div>
-
-        <!-- Информация о статусах -->
-        <div class="status-codes">
-            <strong>📋 Коды статусов (что видит система):</strong><br>
-            • <strong>3</strong> - Создан (ожидание оплаты)<br>
-            • <strong>5</strong> - Оплачено (успех)<br>
-            • <strong>Другие</strong> - Ошибка или отмена<br>
-            <small>💡 Если деньги списались, но статус 3 - проблема в API платежной системы</small>
+            • Система отслеживает callback от платежной системы<br>
+            • <strong>Авто-возврат при получении статуса "5"</strong>
         </div>
 
         <!-- Логи в реальном времени -->
         <div class="debug-info">
             <strong>📊 Логи проверки статуса:</strong>
             <div id="logContainer" class="log-container">
-> 🚀 Запуск улучшенного мониторинга...
+> 🚀 Запуск умного мониторинга...
 > 🎯 Operation ID: ${operationId}
-> 🔄 Проверка через multiple endpoints
+> 🔄 Отслеживание callback + API проверка
 > ⏰ Интервал: 10 секунд
             </div>
         </div>
@@ -520,14 +552,14 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
             </div>
         </div>
 
+        <div id="callbackMessage" class="status-message status-callback" style="display: none;">
+            🔔 <strong>CALLBACK ПОЛУЧЕН! Ожидание подтверждения...</strong><br>
+            <small>Платежная система сообщила об оплате. Проверяем статус...</small>
+        </div>
+
         <div id="pendingMessage" class="status-message status-pending" style="display: none;">
             ⏳ <strong>ОЖИДАНИЕ ОПЛАТЫ</strong><br>
             <small>Текущий статус: <span id="statusInfo">проверяем...</span></small>
-        </div>
-
-        <div id="warningMessage" class="status-message status-warning" style="display: none;">
-            ⚠️ <strong>ВНИМАНИЕ: Деньги списались, но статус не обновился</strong><br>
-            <small>Проблема с API платежной системы. Используйте кнопку "Я оплатил"</small>
         </div>
 
         <!-- Отладочная информация -->
@@ -538,15 +570,14 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
             • Сумма: ${amountInRub} руб.<br>
             • <strong>Требуется статус: 5 (Оплачено)</strong><br>
             • <strong>Проверки: <span id="checkCount">0</span></strong><br>
-            • API Endpoint: <span id="apiEndpoint">не определен</span><br>
+            • Callback ID: <span id="callbackId">не получен</span><br>
             • Последний код: <span id="lastStatusCode">не проверен</span>
         </div>
 
         <!-- Кнопки управления -->
         <div style="margin-top: 20px;">
-            <button id="checkStatusBtn" class="button button-check">🔄 Проверить статус сейчас</button>
-            <button id="forceCheckBtn" class="button button-warning">🔍 Глубокая проверка</button>
-            <a href="${successUrl}" id="manualSuccessBtn" class="button button-success">✅ Я оплатил (вручную)</a>
+            <button id="checkStatusBtn" class="button button-check">🔄 Проверить статус</button>
+            <a href="${successUrl}" id="manualSuccessBtn" class="button button-success">✅ Я оплатил</a>
             <a href="${failUrl}" class="button button-cancel">❌ Отмена</a>
         </div>
     </div>
@@ -556,27 +587,24 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
         const successUrl = '${successUrl}';
         
         let checkInterval;
-        let paidStatus = false;
         let checkCount = 0;
-        let consecutivePending = 0;
-        let lastStatusCode = 'не проверен';
-        let apiEndpoint = 'не определен';
+        let callbackReceived = false;
+        let callbackId = 'не получен';
 
         // Элементы DOM
         const checkingStatus = document.getElementById('checkingStatus');
         const successMessage = document.getElementById('successMessage');
+        const callbackMessage = document.getElementById('callbackMessage');
         const pendingMessage = document.getElementById('pendingMessage');
-        const warningMessage = document.getElementById('warningMessage');
         const countdown = document.getElementById('countdown');
         const timer = document.getElementById('timer');
         const statusInfo = document.getElementById('statusInfo');
         const checkStatusBtn = document.getElementById('checkStatusBtn');
-        const forceCheckBtn = document.getElementById('forceCheckBtn');
         const manualSuccessBtn = document.getElementById('manualSuccessBtn');
         const logContainer = document.getElementById('logContainer');
         const checkCountElement = document.getElementById('checkCount');
         const lastStatusCodeElement = document.getElementById('lastStatusCode');
-        const apiEndpointElement = document.getElementById('apiEndpoint');
+        const callbackIdElement = document.getElementById('callbackId');
 
         // Функция для добавления логов
         function addLog(message) {
@@ -587,14 +615,14 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
         }
 
         // Функция проверки статуса платежа
-        async function checkPaymentStatus(isForceCheck = false) {
+        async function checkPaymentStatus() {
             checkCount++;
             checkCountElement.textContent = checkCount;
             
             try {
                 checkingStatus.style.display = 'block';
-                checkingStatus.textContent = isForceCheck ? '🔍 Глубокая проверка...' : '🔍 Проверяем статус...';
-                addLog(isForceCheck ? 'Глубокая проверка #' + checkCount : 'Проверка #' + checkCount);
+                checkingStatus.textContent = '🔍 Проверяем статус...';
+                addLog('Проверка #' + checkCount);
                 
                 const response = await fetch('/api/check-status', {
                     method: 'POST',
@@ -602,45 +630,39 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        operationId: operationId,
-                        forceCheck: isForceCheck
+                        operationId: operationId
                     })
                 });
                 
                 const result = await response.json();
                 
                 // Обновляем информацию
-                lastStatusCode = result.statusCode || result.status || 'unknown';
+                const lastStatusCode = result.statusCode || result.status || 'unknown';
                 lastStatusCodeElement.textContent = lastStatusCode;
-                apiEndpoint = result.endpoint || 'default';
-                apiEndpointElement.textContent = apiEndpoint;
                 
-                addLog('📊 Ответ: статус ' + result.status + ', код: ' + lastStatusCode + ', endpoint: ' + apiEndpoint);
-                console.log('Status result:', result);
+                if (result.fromCallback) {
+                    callbackId = result.data?.id || 'из callback';
+                    callbackIdElement.textContent = callbackId;
+                    callbackReceived = true;
+                    callbackMessage.style.display = 'block';
+                    addLog('🔔 Проверка через callback ID: ' + callbackId);
+                }
+                
+                addLog('📊 Ответ: статус ' + result.status + ', код: ' + lastStatusCode);
                 
                 checkingStatus.style.display = 'none';
                 
                 if (result.success && result.status === 'paid') {
                     // 🔥 ПЛАТЕЖ УСПЕШЕН
-                    paidStatus = true;
-                    consecutivePending = 0;
                     addLog('🎉 ОПЛАЧЕНО! Статус 5 обнаружен!');
                     showSuccess(result.message, result.data);
-                } else if (result.status === 'pending') {
-                    // 🔥 ОЖИДАНИЕ ОПЛАТЫ
-                    consecutivePending++;
-                    addLog('⏳ Ожидание. Код: ' + lastStatusCode + ', попытка: ' + consecutivePending);
-                    
-                    // Если много раз статус "pending", но деньги списались - показываем предупреждение
-                    if (consecutivePending >= 3) {
-                        addLog('⚠️ Много ожиданий - возможна проблема с API');
-                        showWarning(lastStatusCode, result.message);
-                    } else {
-                        showPending(lastStatusCode, result.message);
-                    }
+                } else if (callbackReceived) {
+                    // 🔥 CALLBACK ПОЛУЧЕН, НО СТАТУС ЕЩЕ НЕ ОБНОВИЛСЯ
+                    addLog('🔔 Callback получен, ожидание подтверждения...');
+                    showCallbackPending();
                 } else {
-                    // 🔥 НЕ ОПЛАЧЕНО ИЛИ ОШИБКА
-                    addLog('❌ Не оплачено. Код: ' + lastStatusCode);
+                    // 🔥 ОЖИДАНИЕ ОПЛАТЫ
+                    addLog('⏳ Ожидание оплаты. Код: ' + lastStatusCode);
                     showPending(lastStatusCode, result.message);
                 }
                 
@@ -655,16 +677,12 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
         // Показать успешный статус
         function showSuccess(message, data) {
             successMessage.style.display = 'block';
+            callbackMessage.style.display = 'none';
             pendingMessage.style.display = 'none';
-            warningMessage.style.display = 'none';
             checkStatusBtn.style.display = 'none';
-            forceCheckBtn.style.display = 'none';
             manualSuccessBtn.style.display = 'none';
             
-            const statusCode = data?.results?.operation_status_code;
-            const statusMsg = data?.results?.operation_status_msg;
-            
-            statusInfo.textContent = statusMsg || message || 'Оплачено';
+            statusInfo.textContent = message || 'Оплачено';
             
             // Остановить проверку
             if (checkInterval) {
@@ -676,20 +694,20 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
             startAutoRedirect();
         }
 
+        // Показать ожидание callback
+        function showCallbackPending() {
+            successMessage.style.display = 'none';
+            callbackMessage.style.display = 'block';
+            pendingMessage.style.display = 'none';
+            statusInfo.textContent = 'Callback получен, проверяем статус...';
+        }
+
         // Показать ожидание
         function showPending(statusCode, statusMsg) {
             successMessage.style.display = 'none';
+            callbackMessage.style.display = 'none';
             pendingMessage.style.display = 'block';
-            warningMessage.style.display = 'none';
             statusInfo.textContent = 'код ' + statusCode + ' - ' + (statusMsg || 'не оплачено');
-        }
-
-        // Показать предупреждение
-        function showWarning(statusCode, statusMsg) {
-            successMessage.style.display = 'none';
-            pendingMessage.style.display = 'none';
-            warningMessage.style.display = 'block';
-            statusInfo.textContent = 'код ' + statusCode + ' - ' + (statusMsg || 'деньги списались, но статус не обновился');
         }
 
         // Автоматическое перенаправление
@@ -719,15 +737,12 @@ function createEnhancedPaymentPage(orderId, operationId, paymentId, amountInRub,
         }
 
         // Ручная проверка по кнопке
-        checkStatusBtn.addEventListener('click', () => checkPaymentStatus(false));
-        
-        // Глубокая проверка
-        forceCheckBtn.addEventListener('click', () => checkPaymentStatus(true));
+        checkStatusBtn.addEventListener('click', checkPaymentStatus);
 
         // Запуск при загрузке
-        addLog('🚀 Запуск улучшенного мониторинга...');
+        addLog('🚀 Запуск умного мониторинга...');
         addLog('🎯 Operation ID: ' + operationId);
-        addLog('🔧 Multiple endpoints проверка');
+        addLog('🔔 Отслеживание callback + API проверка');
         startAutoCheck();
 
     </script>
