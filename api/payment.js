@@ -93,7 +93,7 @@ module.exports = async (req, res) => {
       const payload = {
         sum: amountForQR,
         qr_size: 400,
-        payment_purpose: "Оплата услуг перевода",
+        payment_purpose: "Оплата услуг перевода с иностранных языков",
         notification_url: "https://perevod-rus.ru/callback/"
       };
 
@@ -242,7 +242,7 @@ module.exports = async (req, res) => {
       const payload = {
         sum: amountForQR,
         qr_size: 400,
-        payment_purpose: "Оплата услуг перевода", 
+        payment_purpose: "Оплата услуг перевода с иностранных языков", 
         notification_url: "https://perevod-rus.ru/callback/"
       };
 
