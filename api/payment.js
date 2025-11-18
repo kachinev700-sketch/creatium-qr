@@ -533,17 +533,7 @@ function createCleanPaymentPage(orderId, operationId, amountInRub, qrImage, succ
         <div class="qr-container">
             <img src="${qrImage}" alt="QR Code" class="qr-code">
         </div>
-        
-        <div class="instructions">
-            <h3>Инструкция по оплате:</h3>
-            <ul>
-                <li>Откройте приложение вашего банка</li>
-                <li>Наведите камеру на QR-код</li>
-                <li>Подтвердите платеж в приложении</li>
-                <li>Ожидайте автоматического подтверждения</li>
-            </ul>
-        </div>
-        
+                      
         <div class="status-area">
             <div id="pendingMessage" class="status-message">
                 ⏳ Ожидание платежа...
